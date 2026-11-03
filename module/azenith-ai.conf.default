@@ -1,0 +1,243 @@
+# ===================================================================
+#  Zyrox Gaming Booster v2 - konfigurasi
+#  Lokasi aktif: /data/adb/azenith-ai/azenith-ai.conf
+#  Ubah lewat WebUI, `azenith-ai set KEY NILAI`, atau edit file ini.
+#  Berlaku maksimal ~90 detik (saat tidak sedang main) atau di game berikutnya.
+# ===================================================================
+CONF_VERSION=2
+
+# Preset boost: auto (ikut tier device) | cool | balanced | extreme
+PRESET=auto
+
+# Thermal: off | soft | auto | hard   (lihat README bagian Thermal)
+THERMAL_MODE=auto
+
+# Disable Thermal: fitur INTI permanen (bukan toggle user, tidak ada di WebUI tab Kontrol).
+# Selalu dipaksa 1 setiap boot oleh service.sh & customize.sh. Tidak pernah auto-off sendiri;
+# nilai di bawah ini sekadar dicatat ke log kalau suhu tinggi terdeteksi, TIDAK mematikan fitur.
+TK_GUARD=1           # v1.0.41: pengaman suhu - panas >= TK_HOT_SEC dtk -> keluar dari ZAI-Turbo (thermal hidup lagi)
+THERMAL_KILL=0        # v1.0.9-fix: opt-in (default dulu 1/paksa-nyala tiap boot - penyebab crash+network block)
+AKS_ON=0              # Abaikan Keamanan Kernel - toggle ON/OFF, kunci CPU ke plafon OC tertinggi (min=max)
+                       # HANYA selama game aktif, tidak permanen (lib/killsec.sh)
+TK_BATT_MAX=45
+TK_SKIN_MAX=47
+TK_HOT_SEC=10
+TK_TICK=2            # watchdog (detik), maksimal efektif 2
+TK_BLOCK=0           # 0 = aman (default). 1 = bind-mount stub di binary HAL yang terus dinyalakan ulang
+TK_BLOCK_AFTER=2     # berapa kali hidup-lagi sebelum BLOCK
+TK_KERNEL=0          # 1 = matikan PPM thermal + naikkan trip passive/active zona SoC
+TK_TRIP_C=90         # target trip (C); hanya dinaikkan
+
+# --- Fitur (1 aktif / 0 mati) ---
+FEAT_THERMAL=1          # A: thermal lock/inject berbasis scan
+FEAT_TEMP_MONITOR=1     # B: monitor suhu asli + safety (JANGAN dimatikan)
+FEAT_FREQ=1             # C: lantai frekuensi CPU/GPU per-level
+FEAT_SCHED=1            # D: scheduler (rate limit, sched_boost di extreme)
+FEAT_PRIORITY=1         # E: nice/ionice proses game
+FEAT_FPS_ENGINE=1       # F/G: FPS sustain engine (basis FPSGO)
+FEAT_FPSGO_TUNE=1       # F: tuning node FPSGO (MediaTek)
+FEAT_SURFACEFLINGER=1   # I: prop SF saat boot (tier mid ke atas)
+FEAT_LOG_REDUCE=1       # J: kurangi overhead log/trace
+FEAT_TOUCH=1            # K: node touch boost vendor + fpsgo_enable/stop_boost/perfserv_ta (fallback GED) -
+                        # azenith-ai touch on|off|status, AKTIF=1 / MATI=0 dipaksa langsung ke kernel
+FEAT_IO=1               # L: read-ahead, UFS clock
+FEAT_REFRESH=1          # M: kunci refresh rate tertinggi saat game
+FEAT_NETWORK=1          # N: tuning jaringan
+FEAT_RAM=1              # O: RAM manager
+FEAT_DOWNSCALE=1        # P: downscale resolusi render per-game (GameManagerService, fallback wm size+density kalau ROM tidak dukung; opt-in per paket)
+FEAT_COOLING=1          # Q: Cooling SoC per-game (slider 0-4 di tab Game; thermal decay via power limiting, lib/cooling.sh)
+COOL_STEP_SEC=60        # Q: tiap berapa detik plafon diturunkan/dinaikkan satu tahap
+COOL_STEP_PCT=10        # Q: besar satu tahap (% dari plafon asli)
+COOL_HYST_C=6           # Q: plafon baru naik lagi kalau SoC <= pemicu - nilai ini (C)
+
+# --- Batas suhu pengaman (suhu ASLI) ---
+SAFE_SOC_C=auto         # auto = ikut tier (flagship 92, high 88, mid 85, low 80)
+SAFE_BATT_C=43
+SAFE_SKIN_C=46
+SAFE_HOT_SECONDS=20     # detik melewati batas sebelum boost dimatikan
+COOLDOWN_SEC=180
+INJECT_C=40             # suhu emulasi bila kernel punya emul_temp
+TRIP_RAISE_C=0          # hanya THERMAL_MODE=hard; naikkan trip passive (derajat)
+
+# --- Proteksi khusus THERMAL_MODE=hard (lebih ketat dari auto/soft, karena
+#     hard mematikan lebih banyak node throttle vendor) ---
+HARD_SAFE_HOT_SECONDS=8      # ganti SAFE_HOT_SECONDS saat mode hard (default 20 -> 8)
+HARD_EMERGENCY_MARGIN_C=5    # suhu > batas tier + ini = stop LANGSUNG, tanpa tunggu
+HARD_MON_SEC=2               # jarak cek suhu saat mode hard (default 4 -> 2 dtk)
+HARD_DEMOTE_AFTER_TRIP=1     # 1 = otomatis turun ke 'auto' setelah safety trip di mode hard
+
+# --- Mesin FPS ---
+FPS_TICK=2
+FPS_DROP_PCT=90         # fps < 90% plafon -> level naik
+FPS_STABLE_SAMPLES=15   # sampel stabil sebelum level turun
+
+# --- Anti-sawtooth (level CPU/GPU naik-turun cepat berulang) ---
+SAWTOOTH_WINDOW_SEC=45  # jendela waktu untuk menghitung gantian arah naik/turun
+SAWTOOTH_FLAPS=3        # berapa kali gantian arah dalam jendela = dianggap sawtooth
+SAWTOOTH_LOCK_SEC=60    # kunci level (tidak naik/turun) selama ini kalau sawtooth terdeteksi
+
+# --- FPSGO: audisi A/B (FPS diukur dari sistem, grup node yang merugikan dibuang) ---
+FPSGO_AUDITION=1        # 1 = uji tiap grup node per game; 0 = terapkan semua tanpa uji
+FPSGO_DISCOVER=1        # sertakan node biner *rescue*/*boost*/*ultra* yang ditemukan di device
+FPSGO_APPLY_UNVERIFIED=0 # 1 = terapkan grup yang tak bisa diuji (tak ada sumber FPS)
+FPSGO_AB_WARMUP=6       # sampel awal diabaikan (loading)
+FPSGO_AB_WINDOW=8       # sampel per jendela ukur (x FPS_TICK detik)
+FPSGO_AB_SETTLE=3       # sampel dibuang setelah node diubah
+FPSGO_AB_REG_PCT=3      # FPS rata-rata turun >= nilai ini (%) -> grup dibuang
+FPSGO_RELEARN_DAYS=14   # hasil uji dipakai ulang selama N hari (kernel sama)
+
+# --- Deteksi ---
+POLL_INTERVAL=3
+FG_CHECK_INGAME=5
+EXTRA_GAME_PACKAGES=    # pisah koma; atau: azenith-ai game add <paket>
+
+# --- Prioritas / RAM / jaringan ---
+PRIO_NICE=-6
+PRIO_RT=0               # 1 = SCHED_FIFO pada thread render saja (berisiko)
+RAM_KILL_BG=0
+RAM_DROP_CACHES=0
+NET_PING_LOG=0          # dipakai internal oleh network_apply (lib/misc.sh) SELAMA game aktif saja -
+                        # data avg/jitter/loss untuk monitor, bukan toggle berdiri sendiri
+NET_PING_HOST=8.8.8.8
+NET_PING_INTERVAL=10    # detik antar batch ping (5 paket per batch)
+SF_BOOT_PROPS=0          # 0 = aman. debug.sf.latch_unsignaled/disable_backpressure bisa bikin app crash/freeze
+NOTIFY=1
+
+# --- DND In-Game: senyapkan SEMUA notifikasi+suara dari LUAR game selama game
+#     aktif (Settings.Global zen_mode=2, DND resmi Android), audio game sendiri
+#     TIDAK disentuh. Otomatis lepas begitu game berhenti/toggle dimatikan. ---
+FEAT_DND_INGAME=0
+
+# --- Freeze In-Game: bekukan (pm disable-user, reversibel) app pihak ketiga
+#     yang tidak dipakai selama game aktif, buat hemat CPU/RAM/baterai.
+#     Otomatis dikembalikan (pm enable) begitu game berhenti/toggle dimatikan.
+#     FREEZE_INCLUDE_SYSTEM: opt-in, HANYA paket yang SUDAH ditambahkan sadar
+#     ke whitelist (azenith-ai freeze addsys <paket>) - BUKAN "semua app
+#     sistem", lihat peringatan keamanan di lib/freeze.sh. Kecuali app di
+#     FREEZE_GUARD (lib/freeze.sh) & $DATADIR/freeze_keep.user milik user. ---
+FEAT_FREEZE_INGAME=0
+FREEZE_INCLUDE_SYSTEM=0
+
+# --- Bypass Charging (NYATA, diverifikasi dari status baterai DAN current_now - bukan toggle visual) ---
+CHARGE_BYPASS=0         # ON: cmd battery set status 4 / OFF: cmd battery reset (WebUI atau `azenith-ai charge on|off`)
+CHARGE_MIN_PCT=20       # baterai <= ini -> otomatis dimatikan (anti over-discharge saat beban main berat)
+CHARGE_TICK=2           # watchdog re-assert + cek keamanan (detik) - pendek sengaja, supaya node yang
+                        # ditimpa balik oleh Power Manager/thermal daemon OEM cepat ditulis ulang
+CHARGE_VERIFY_TRIES=3   # baca ulang status+arus berapa kali (x2dtk) sebelum nyerah di satu node
+CHARGE_CUSTOM_NODE=     # path node manual hasil 'azenith-ai charge diag' (kalau deteksi otomatis gagal di device ini)
+CHARGE_CUSTOM_METHOD=enable  # enable|suspend|current, dipasangkan dengan CHARGE_CUSTOM_NODE
+CHARGE_FAKE_ICON=1      # mode HARDWARE saja: tetap tampilkan ikon/status "Charging" di Android (dumpsys,
+                        # kosmetik doang) walau arus fisik ke baterai sudah berhenti beneran - supaya tidak
+                        # dikira charger/kabel rusak. Set 0 kalau mau status apa-adanya (ikut lapor "Not charging").
+
+# --- Fast Charger (v1.0.15): HANYA mematikan thermal (Disable Thermal + BLOCK respawn).
+#     Arus charge TIDAK disentuh. ON menyalakan THERMAL_KILL=1 & TK_BLOCK=1, OFF mengembalikan. ---
+FC_BATT_MAX_C=50        # Fast Charger menyembunyikan suhu zona SoC dari app/sistem -> pengaman: kalau suhu BATERAI
+                        # (dibaca root, tidak disembunyikan) >= nilai ini, Fast Charger otomatis dimatikan. 0 = nonaktif
+FAST_CHARGE=0           # azenith-ai fastcharge on|off|status - SELAMA aktif, Perf Lite ditolak & mode saver
+VX_CURRENT_UA=6000000    # VoltEx (bagian Fast Charger): target arus charge, maks 6000000 uA (6 A)
+VX_LOW_UA=3000000        # arus saat baterai > VX_TEMP_MAX
+VX_TEMP_MAX=450          # 0.1C: di atas ini arus turun ke VX_LOW_UA (dipaksa maks 450 = 45.0C)
+VX_TEMP_RESUME=420       # 0.1C: kembali ke VX_CURRENT_UA setelah suhu <= ini
+VX_TICK=10               # detik antar putaran loop VoltEx
+                        # tidak direspon; mode balance tetap bisa dipakai (lihat lib/charge.sh FC_MODE_LOCK)
+
+# --- Network Booster: NSS/optimasi TCP-IP + fix latency (persisten, tahan reboot) ---
+NETBOOST=0              # azenith-ai netboost on|off|status ; AKTIF -> congestion=bbr3, MATI -> dipaksa cubic
+NET_CONGESTION=bbr3      # dipakai kalau tersedia di kernel, fallback otomatis ke bbr/westwood/cubic
+
+# --- WiFi Tweak: 15 perintah `cmd wifi` (hi-perf, low-latency, matikan pno-scan/watchdog/throttling/dll).
+#     Toggle tersendiri, pola sama seperti Network Booster. azenith-ai wifitweak on|off|status ---
+WIFITWEAK=0
+
+# --- Refresh Rate (Hz): kunci peak_refresh_rate & min_refresh_rate ke angka target (dibaca DevCheck lewat API
+#     SurfaceFlinger/DisplayManager) + matikan ro.surface_flinger.use_content_detection_for_refresh_rate.
+#     Target WAJIB ada di mode yang didukung panel (dumpsys display), kalau tidak fitur GAGAL apa adanya.
+#     Tahan reboot. azenith-ai hz on [hz]|off|set <hz>|modes|status ---
+HZ=0
+HZ_TARGET=0             # 0 = Hz tertinggi yang didukung panel
+
+# --- Frame Rate (FPS): kunci refresh rate di global+system+secure, matikan adaptive/battery-saver refresh,
+#     lepas pembatas SurfaceFlinger/EGL (idle timer, backpressure, swapinterval...). FPS tetap dibatasi Hz panel.
+#     SALING MENGGANTIKAN dengan fitur Refresh Rate (Hz) (key peak/min sama): mengaktifkan satu mematikan yang lain.
+#     azenith-ai framerate on [fps]|off|set <fps>|status|diag ---
+FRAMERATE=0
+FRAMERATE_TARGET=0      # 0 = Hz tertinggi yang didukung panel
+
+# --- Frame Rate (FPS) PER GAME (v1.0.30): data game (paket|profil|fps|nama) di /data/adb/azenith-ai/game_fps.list,
+#     diterapkan otomatis saat game itu dibuka (GameManager --fps; fallback kunci Hz selama game).
+#     azenith-ai game fps set <paket> <fps> [hemat|standar|performa] [nama]|del <paket>|get <paket>|list
+FEAT_GAMEFPS=1
+
+# --- Perf Lite: profil ringan & hemat daya (VM/RAM, governor CPU/GPU, grafis/UI, I/O+FSTrim, log).
+#     Boleh bersama mode Balanced. SELAMA AKTIF: PowerSaver & ZAI-Turbo ditolak, Fast Charger
+#     otomatis mati dan tidak bisa dinyalakan. azenith-ai perflite on|off|status ---
+PERFLITE=0
+
+# --- Core CPU online/offline PER CORE (lib/cpucore.sh). cpu0 tidak pernah dimatikan.
+#     CC_OFF_LIST = core offline (mis. 4,5,6,7), CC_BOOT=1 -> terapkan ulang tiap boot. azenith-ai cpucore off|on <n|a|b|all> ---
+CC_OFF_LIST=
+CC_BOOT=0
+PL_SWAPPINESS=40        # 30-40 disarankan: sistem tidak agresif memindah data app ke zRAM/swap
+PL_VFS_PRESSURE=120     # 120-150: cache direktori/inode lama dibersihkan lebih cepat
+PL_READAHEAD_KB=512     # read-ahead storage (default Android umumnya 128)
+PL_UP_US=500            # schedutil up_rate_limit_us
+PL_DOWN_US=2000         # schedutil down_rate_limit_us
+PL_TOP_UCLAMP_MIN=10    # boost margin top-app (uclamp.min, 0-100)
+PL_BG_UCLAMP_MAX=50     # batas CPU proses background (uclamp.max, 0-100)
+
+# --- Graphics API Universal: ganti renderer grafis SELURUH SISTEM (bukan per-game lagi) -
+#     debug.hwui.renderer (Skia/GL atau Skia/Vulkan) + ANGLE for all apps (Settings.Global
+#     angle_gl_driver_all_angle), otomatis kedeteksi aplikasi info sistem (DevCheck dkk),
+#     non-stop & tahan reboot. azenith-ai gfx universal set <api>|off|status ---
+GFX_UNIVERSAL=0           # 1 = aktif (diterapkan ulang otomatis tiap boot oleh service.sh)
+GFX_UNIVERSAL_API=skiavk  # vulkan|skiavk|skiagl - kalau backend yg diminta gagal diverifikasi, apply akan GAGAL apa adanya (tidak dialihkan diam-diam)
+
+# --- Spoof PROSESOR (v1.0.36, menggantikan Spoof GPU): ro.soc.model/ro.soc.manufacturer (+chipname) ditimpa lewat resetprop
+#     (in-memory, SYSTEMLESS), diterapkan ulang tiap boot di post-fs-data. Tidak ada driver/partisi yang ditulis.
+#     Kelola lewat WebUI tab Spoofing atau: azenith-ai cpuspoof on <id> | off
+#     id: sd8elite5 sd888p sd650 sd8g2 d9500 d9500s d9500m d9400 d9400p d9000 d9000p d8300u d8500u d8400
+SPOOF_CPU=0
+SPOOF_CPU_PROFILE=
+
+# --- Spoof NAMA PERANGKAT (v1.0.21): ro.product.model/brand/manufacturer/device ditimpa lewat resetprop (in-memory, SYSTEMLESS),
+#     diterapkan ulang tiap boot di post-fs-data. build.prop di /system /vendor /product /system_ext TIDAK pernah ditulis.
+#     Kelola lewat WebUI tab Spoofing atau: azenith-ai devspoof on <id> | off  (id: pixel9proxl pixel9pro s22ultra s24ultra | set custom ...)
+SPOOF_DEV=0
+SPOOF_DEV_PROFILE=
+
+# --- Overclock saat boot ---
+OC_BOOT_APPLY=1         # 0 = jangan terapkan override overclock saat boot
+OC_BOOT_DELAY=90        # detik setelah daemon start
+TK_KILL_PROCS=0         # 1 = kill -9 semua proses bernama *thermal* tiap 6 dtk (berisiko, bisa bikin system_server goyah)
+
+# --- Anti-bootloop ---
+BOOT_FAIL_LIMIT=3       # boot berturut-turut tak sehat sebelum self-disable
+BOOT_OK_DELAY=45        # detik setelah boot_completed sebelum boot dianggap sehat
+SAFE_WINDOW_SEC=8       # jendela baca tombol volume saat boot
+STAGE_STEP_DELAY=0
+
+# --- Network Pro (lib/netpro.sh) - fitur jaringan setara PingPimp. CLI: azenith-ai net ... ; tiap fitur toggle sendiri, tahan reboot ---
+NP_AUTO=0               # Smart Auto: preset (game/download/streaming/social/browsing/outdoor) otomatis sesuai aplikasi aktif
+NP_QDISC=0              # qdisc anti-bufferbloat
+NP_QDISC_ALGO=cake      # cake | fq_codel | fq (cake otomatis fallback ke fq_codel bila kernel tidak punya)
+NP_MTU=0                # MTU adaptif (probe ping DF)
+NP_DNS=0                # Private DNS terpisah seluler/WiFi/per SSID
+NP_DNS_MOBILE=auto      # off | auto | google | cloudflare | adguard | quad9 | hostname
+NP_DNS_WIFI=auto
+NP_ADV=0                # IRQ affinity jaringan -> core tercepat + boost ksoftirqd
+NP_NICOFF=0             # offloading NIC off (butuh ethtool)
+NP_CONNTRACK=0          # ConnTrack diperbesar
+NP_IPV6OFF=0            # matikan IPv6
+NP_DATASAVER=0          # Data Saver sistem
+NP_NETSTATE=0           # matikan notifikasi/scan status jaringan WiFi
+NP_LTECA=0              # force_lte_ca=true
+NP_ISOLATE=0            # blokir internet per aplikasi (daftar: net isolate add <pkg>)
+NP_BOOST=0              # DSCP 46 per aplikasi (daftar: net boost add <pkg>)
+NP_BOOST_GAMES=1        # ikut boost semua game di daftar game Zyrox
+NP_WATCH_SEC=5          # interval watcher Network Pro (detik)
+NP_TFO=0                # Net Boost: TCP Fast Open (tcp_fastopen=3)
+NP_WIFIPS=0             # Net Boost: Wi-Fi power-save off (butuh biner iw)
+NP_RPS=0                # Net Boost: RPS boost (rps_cpus semua core di interface data)
+NP_BLOCKALL=0           # Net Block: blokir internet SEMUA app (UID 10000-19999) kecuali daftar izin
+NP_DSCP=46              # nilai DSCP Boost Apps (0-63, 46 = EF)

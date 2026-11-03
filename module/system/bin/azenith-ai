@@ -1,0 +1,708 @@
+#!/system/bin/sh
+# =====================================================================
+#  Zyrox v2 CLI  (butuh root)
+#  azenith-ai devinfo [live]   (info perangkat: device/SoC/RAM/ROM/kernel, format key=value)
+#  azenith-ai monitor [fast]   (live CPU/GPU/RAM/jaringan/suhu ala DevCheck, format key=value; "fast" = tanpa dumpsys radio, untuk polling cepat WebUI)
+#  azenith-ai netinfo          (jaringan AKTIF sekarang: WiFi SSID/RSSI/link speed, atau data seluler operator/jenis(2G-5G)/sinyal dBm)
+#  azenith-ai ping             (ping ICMP NYATA ke 1.1.1.1/8.8.8.8: ms/jitter/loss/host, dipakai indikator latensi WebUI; WiFi & data seluler)
+#  azenith-ai gpuinfo          (vendor GPU terdeteksi: Mali/ARM, Adreno/Qualcomm, atau PowerVR/Imagination + model kalau terbaca)
+#  azenith-ai status [raw] | on | off | auto | toggle | scan | report | selftest
+#           doctor | preset <auto|cool|balanced|extreme> | game add|del|list <pkg>
+#           apps                         (daftar semua paket terpasang, untuk picker "Tambah" di WebUI)
+#           set <KEY> <nilai> | log [n] | flog [fitur|all|list|summary|clear] [ok|err|bug|info] [n] | start | stop | restart | enable
+#           gfx universal set <vulkan|skiavk|skiagl> | off | status
+#           (Graphics API Universal: berlaku SELURUH SISTEM/semua app, bukan per-game lagi,
+#            otomatis kedeteksi aplikasi info sistem seperti DevCheck, non-stop & tahan reboot;
+#            kalau backend yang diminta gagal diverifikasi, langsung GAGAL apa adanya - TIDAK dialihkan diam-diam)
+#           fpsgo [nodes|reset [paket]]   (bukti efek FPSGO ke FPS)
+#           kernel scan [berkas]   (scan kernel LIVE: apa/basis/lock/frekuensi CPU-GPU, tanpa perlu upload)
+#           kernel match <berkas> | kernel apply [force] | kernel revert   (cocokkan node vs kernel nyata)
+#           game cooling set <paket> <0-4>|off|get|list   (Cooling SoC per game, lib/cooling.sh)
+#           cooling status|reset
+#           zram status | apply <algo> <MB> [swappiness] | auto | off | boot on|off   (zRAM /sys/block/zram0; auto = rekomendasi otomatis dari RAM+core lalu langsung terapkan)
+#           charge on|off|status|diag   (Bypass Charging NYATA; diag = daftar node charger di device ini)
+#           netboost on|off|status      (NSS/optimasi TCP-IP + fix latency; AKTIF -> congestion=bbr3, MATI -> cubic; persisten tahan reboot)
+#           perflite on|off|status      (Perf Lite: VM/RAM, governor CPU/GPU, grafis/UI, I/O+FSTrim, log; bisa bareng Balanced SAJA - PowerSaver & ZAI-Turbo dikunci, Fast Charger otomatis mati)
+#           wifitweak on|off|status     (WiFi Tweak: 15 perintah cmd wifi - hi-perf, low-latency, matikan pno-scan/watchdog/throttling; persisten tahan reboot)
+#           game fps set <paket> <fps> [hemat|standar|performa] [nama]|del <paket>|get <paket>|list   (Frame Rate PER GAME: GameManager --fps, fallback kunci Hz selama game; lib/gamefps.sh)
+#           framerate off|status|diag   (Frame Rate global lama DIPENSIUNKAN - hanya untuk memulihkan nilai lama)
+#           hz on [hz]|off|set <hz>|modes|diag|status   (Refresh Rate: peak/min_refresh_rate + matikan content detection SurfaceFlinger; target divalidasi ke mode panel; tahan reboot)
+#           devspoof detect|profiles|status|on <id> [--restart]|set custom <brand> <manufacturer> <model> <device> [--name n] [--fp f] [--restart]|off|verify|restart
+#            (Spoof NAMA PERANGKAT systemless via resetprop: ro.product.model/brand/manufacturer/device, build.prop asli TIDAK disentuh,
+#             diterapkan ulang tiap boot di post-fs-data - lihat dev_spoof.sh)
+#           cpuspoof detect|profiles|status|on <id> [--restart]|off|verify|restart   (alias: spoof)
+#            (Spoof PROSESOR systemless via resetprop: ro.soc.model/ro.soc.manufacturer (+chipname), menggantikan Spoof GPU;
+#             tidak ada driver/partisi yang diubah, diterapkan ulang tiap boot di post-fs-data - lihat cpu_spoof.sh)
+#           net <qdisc|mtu|dns|adv|nicoff|conntrack|ipv6off|datasaver|netstate|lteca|isolate|boost|auto|cc|boot|alloff|status> ...
+#            (Network Pro setara PingPimp: qdisc CAKE/fq_codel, MTU adaptif, Private DNS seluler/WiFi/SSID, IRQ affinity+ksoftirqd,
+#             ConnTrack, IPv6 off, Data Saver, Isolate Apps (iptables), Boost Apps (DSCP 46), Smart Auto preset; lihat lib/netpro.sh)
+#           wifill on|off|status        (WiFi Low Latency TERSENDIRI: force-low-latency-mode + matikan hemat daya Wi-Fi; persisten tahan reboot)
+#           kernel features             (cek kompatibilitas fitur & kemampuan kernel: BISA / SEBAGIAN / TIDAK BISA, format STATUS|GRUP|NAMA|DETAIL)
+#           touch on|off|status         (Touch Boost: fpsgo_enable/stop_boost/perfserv_ta, fallback GED - langsung ke kernel)
+#           cleaner scan | cleaner clean <soft|agresif|cache|trash|dalvik|crash|ota|tmp>
+#            (soft=cache app+trash app terhapus, ringan; agresif=SEMUA kategori total termasuk dalvik-cache/OAT,
+#             /cache, log crash tombstones/ANR/dropbox, sisa OTA, file sementara; TIDAK menyentuh /data/system/
+#             selain package_cache & dropbox - bukan antivirus)
+#           thermalkill on [quick] | off | now | status
+#           killsec on|off|status       (Abaikan Keamanan Kernel: kunci CPU min=max ke plafon OC tertinggi
+#            HANYA selama game aktif, lepas limiter software PPM/msm_performance, tidak permanen)
+#           webui hide|show|status      (tombol WebUI di manager module KernelSU/APatch: hide = UI dipindah ke ui/, show = kembali ke webroot/)
+#           thermal daily on|off|status   (Thermal Lock Daily: fitur A non-stop, daily & gaming)
+#           profile <default|saver|azetturbo>   (alias cpu_gpu_profile.sh lama -> azenith-thermal balance|saver|gaming|extreme)
+#           test gfxapi | perf | cleaner | charge | all   (uji fitur & baca balik nilai NYATA dari kernel/sistem
+#            setelah diterapkan, untuk buktikan fitur beneran bekerja atau cuma gimik; hasil ditulis ke file teks di
+#            $DATADIR/test_logs/<fitur>.txt dan ikut dicetak ke layar)
+#           flog  (LOG PER FITUR: tiap fitur mencatat BERHASIL=OK / ERROR=ERR / BUG=BUG ke $DATADIR/feature_logs/<FITUR>.log
+#            contoh: azenith-ai flog all | flog charge | flog netboost err | flog summary | flog clear charge)
+#           dnd status                  (DND In-Game: toggle via 'set FEAT_DND_INGAME 1|0', aktif/lepas otomatis mengikuti sesi game)
+#           freeze status | addsys/delsys/listsys <paket> | keep/unkeep/listkeep <paket>
+#            (Freeze In-Game: toggle via 'set FEAT_FREEZE_INGAME 1|0' + 'set FREEZE_INCLUDE_SYSTEM 1|0';
+#             pihak ketiga dibekukan otomatis, app sistem HANYA dari whitelist addsys, app inti selalu ditolak)
+# =====================================================================
+MODDIR=${MODDIR:-/data/adb/modules/azenith-ai}
+[ -f "$MODDIR/common.sh" ] || MODDIR=${0%/system/bin/*}
+export MODDIR
+. "$MODDIR/common.sh"
+load_conf
+
+daemon_alive() {
+  da_p=$(cat "$RUNDIR/daemon.pid" 2>/dev/null)
+  [ -n "$da_p" ] && kill -0 "$da_p" 2>/dev/null
+}
+hb_age() {
+  hb=$(cat "$RUNDIR/heartbeat" 2>/dev/null); [ -n "$hb" ] || { echo -1; return; }
+  echo $(( $(uptime_s) - hb ))
+}
+start_sup() {
+  rm -f "$RUNDIR/stop" "$RUNDIR/supervisor_state"
+  sp=$(cat "$RUNDIR/supervisor.pid" 2>/dev/null)
+  if [ -n "$sp" ] && kill -0 "$sp" 2>/dev/null; then echo "supervisor sudah jalan (pid $sp)"; return; fi
+  AZ_NOFLOG= nohup sh "$MODDIR/lib/supervisor.sh" >/dev/null 2>&1 &
+  echo "supervisor dijalankan"
+}
+setmode() { echo "$1" > "$DATADIR/mode_state"; }
+
+show_status() {
+  scan_if_needed >/dev/null 2>&1
+  lv=$(cat "$RUNDIR/level" 2>/dev/null); fp=$(cat "$RUNDIR/fps_now" 2>/dev/null); tp=$(cat "$RUNDIR/temps" 2>/dev/null)
+  if [ "$1" = raw ]; then
+    echo "version=$TX_VER"
+    echo "daemon=$(daemon_alive && echo up || echo down)"
+    echo "heartbeat_age=$(hb_age)"
+    echo "mode=$(cat "$DATADIR/mode_state" 2>/dev/null || echo auto)"
+    echo "game=$(cat "$RUNDIR/game" 2>/dev/null)"
+    echo "level=${lv:-0}"
+    echo "fps=${fp:-}"
+    echo "temps=${tp:-}"
+    echo "preset=$PRESET"
+    echo "thermal_mode=$THERMAL_MODE"
+    echo "thermal_state=$(cat "$DATADIR/azenith_thermal_mode" 2>/dev/null || echo balance)"
+    echo "tkill=$THERMAL_KILL"
+    tk_watch   # v1.0.9: WebUI/app polling = penjaga otomatis dihidupkan lagi kalau mati
+    echo "tk_running=$(tk_list_running | wc -l)"
+    echo "tk_loop=$(tk_loop_alive && echo 1 || echo 0)"
+    echo "tk_off=$([ -f "$DATADIR/tk_off" ] && echo 1 || echo 0)"
+    echo "tk_err=$(tail -n 1 "$DATADIR/tk_lasterr" 2>/dev/null | tr '|=' '  ')"
+    echo "bypass=$BYPASS_THERMAL"
+    echo "thermal_daily=$THERMAL_DAILY"
+    echo "charge=$CHARGE_BYPASS"
+    echo "fastcharge=$FAST_CHARGE"
+    echo "charge_node=$(cat "$CHG_NODE" 2>/dev/null)"
+    echo "charge_batt_status=$(chg_cur_status 2>/dev/null)"
+    echo "charge_batt_level=$(chg_cur_level 2>/dev/null)"
+    echo "charge_plugged=$(chg_plugged 2>/dev/null && echo 1 || echo 0)"
+    echo "netboost=$NETBOOST"
+    echo "net_congestion=$(dv_cat "$R/proc/sys/net/ipv4/tcp_congestion_control" 2>/dev/null)"
+    echo "wifill=$WIFILL"
+    echo "cpuspoof=$SPOOF_CPU"
+    echo "cpuspoof_profile=$SPOOF_CPU_PROFILE"
+    echo "devspoof=$SPOOF_DEV"
+    echo "devspoof_profile=$SPOOF_DEV_PROFILE"
+    echo "perflite=$PERFLITE"
+    echo "wifitweak=$WIFITWEAK"
+    for np_k in AUTO QDISC QDISC_ALGO MTU DNS DNS_MOBILE DNS_WIFI ADV NICOFF CONNTRACK IPV6OFF DATASAVER NETSTATE LTECA ISOLATE BOOST BOOST_GAMES TFO WIFIPS RPS BLOCKALL DSCP; do
+      eval "np_v=\$NP_$np_k"; echo "np_$(echo $np_k | tr 'A-Z' 'a-z')=$np_v"
+    done
+    echo "np_preset=$(cat "$RUNDIR/np_preset_cur" 2>/dev/null)"
+    echo "np_net=$(np_active_type)"
+    echo "hz=$HZ"
+    echo "hz_target=$HZ_TARGET"
+    echo "hz_peak=$(hz_get peak_refresh_rate)"
+    echo "hz_min=$(hz_get min_refresh_rate)"
+    echo "hz_active=$(hz_active)"
+    echo "framerate=$FRAMERATE"
+    echo "framerate_target=$FRAMERATE_TARGET"
+    echo "hz_sfprop=$(getprop $HZ_SF_PROP 2>/dev/null)"
+    echo "gfx_universal=$GFX_UNIVERSAL"
+    echo "gfx_universal_api=$GFX_UNIVERSAL_API"
+    echo "gfx_universal_live=$(getp debug.hwui.renderer)"
+    echo "gfx_universal_angle=$(settings get global angle_gl_driver_all_angle 2>/dev/null)"
+    echo "touch=$FEAT_TOUCH"
+    echo "touch_fpsgo_enable=$(dv_cat "$TB_FP1" 2>/dev/null)"
+    echo "touch_stop_boost=$(dv_cat "$TB_FP2" 2>/dev/null)"
+    echo "touch_perfserv_ta=$(dv_cat "$TB_FP3" 2>/dev/null)"
+    echo "touch_ged_boost_enable=$(dv_cat "$TB_GED1" 2>/dev/null)"
+    echo "soc=$SOC_VENDOR/$SOC_NAME"
+    echo "rom=$ROM_FAMILY"
+    echo "tier=$TIER"
+    echo "ram_mb=$RAM_MB"
+    echo "gpu=$GPU_BACKEND"
+    echo "fpsgo=$HAS_FPSGO"
+    echo "fps_sources=$FPS_ORDER"
+    echo "dnd_ingame=$FEAT_DND_INGAME"
+    echo "freeze_ingame=$FEAT_FREEZE_INGAME"
+    echo "freeze_sys=$FREEZE_INCLUDE_SYSTEM"
+    echo "freeze_count=$([ -s "$FREEZE_LIST" ] && wc -l < "$FREEZE_LIST" | tr -d ' ' || echo 0)"
+    echo "disabled=$([ -f "$MODDIR/disable" ] && echo 1 || echo 0)"
+    echo "boot_count=$(cat "$DATADIR/boot_count" 2>/dev/null || echo 0)"
+    echo "safe_mode=$(cat "$DATADIR/safe_mode" 2>/dev/null)"
+    return
+  fi
+  echo "=== Zyrox $TX_VER ==="
+  echo "Daemon     : $(daemon_alive && echo "jalan (heartbeat $(hb_age)s lalu)" || echo MATI)"
+  echo "Module     : $([ -f "$MODDIR/disable" ] && echo "DISABLED" || echo aktif)   boot_count=$(cat "$DATADIR/boot_count" 2>/dev/null || echo 0)"
+  echo "SoC / Tier : $SOC_VENDOR / $SOC_NAME / $TIER  (RAM ${RAM_MB}MB, cluster $N_CLUSTERS, GPU $GPU_BACKEND, FPSGO $HAS_FPSGO)"
+  echo "ROM        : $ROM_FAMILY  - $ROM_WHY"
+  echo "Mode       : $(cat "$DATADIR/mode_state" 2>/dev/null || echo auto)   preset=$PRESET   thermal=$THERMAL_MODE"
+  tk_watch
+  echo "Thermal    : THERMAL_KILL=$THERMAL_KILL penjaga=$(tk_loop_alive && echo jalan || echo MATI) service thermal masih hidup=$(tk_list_running | wc -l)"
+  echo "Game aktif : $(cat "$RUNDIR/game" 2>/dev/null || echo -)"
+  [ -n "$fp" ] && echo "FPS/plafon/level: $fp"
+  [ -n "$tp" ] && echo "Suhu SoC|batt|skin|state: $tp"
+  echo "Sumber FPS : ${FPS_ORDER:-tidak ada}"
+  echo "Tulis sysfs: ok=$(grep -c '^ok' "$RUNDIR/writes" 2>/dev/null) dibulatkan=$(grep -c '^diff' "$RUNDIR/writes" 2>/dev/null) ditolak=$(grep -c '^rej' "$RUNDIR/writes" 2>/dev/null)"
+}
+
+# ---------------- selftest: uji nyata di device INI -----------------
+selftest() {
+  echo "=== Zyrox selftest (non-destruktif: apply -> verifikasi -> revert) ==="
+  daemon_alive && [ -f "$RUNDIR/game" ] && { echo "Game sedang aktif, selftest dibatalkan."; return 1; }
+  scan_all; load_conf
+  FPSGO_AUDITION=0       # selftest menerapkan semua grup sekaligus untuk menguji revert
+  thermal_limits_init; preset_params
+  echo "[scan] vendor=$SOC_VENDOR tier=$TIER cluster=$N_CLUSTERS gpu=$GPU_BACKEND fpsgo=$HAS_FPSGO fg_method=$FG_METHOD"
+  [ "$FG_METHOD" = 0 ] && echo "  ! deteksi foreground app GAGAL di semua metode"
+  [ "$N_CLUSTERS" = 0 ] && echo "  ! tidak ada cpufreq terbaca"
+  [ "$GPU_BACKEND" = none ] && echo "  ! GPU tidak punya backend yang dikenali (floor GPU di-skip)"
+  echo "[snapshot] simpan nilai awal"
+  snap="$RUNDIR/selftest_before"; snap2="$RUNDIR/selftest_after"
+  take_snap() { { for f in "$R"/sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq "$R"/sys/class/devfreq/*/min_freq \
+       "$R"/sys/class/thermal/thermal_zone*/mode "$R"/proc/sys/vm/min_free_kbytes "$R"/proc/sys/kernel/printk \
+       "$R"/sys/block/*/queue/read_ahead_kb; do [ -r "$f" ] && echo "$f=$(cat "$f" 2>/dev/null)"; done
+       echo "refresh=$(settings get system peak_refresh_rate 2>/dev/null)/$(settings get system min_refresh_rate 2>/dev/null)"; } > "$1"; }
+  take_snap "$snap"
+  : > "$RUNDIR/writes"
+  for fn in thermal_apply perf_sched_apply perf_fpsgo_apply log_reduce_apply perf_touch_apply perf_io_apply refresh_apply network_apply ram_apply; do
+    "$fn" && echo "  [ok]   $fn" || echo "  [gagal] $fn"
+  done
+  for lv in 1 3 5 0; do perf_set_level $lv; echo "  [level $lv] cpu/gpu/uclamp ditulis"; done
+  sleep 2
+  temps_read probe; echo "[suhu] soc=${T_SOC:-?} batt=${T_BATT:-?} skin=${T_SKIN:-?}  (batas $SOC_LIM/$BATT_LIM/$SKIN_LIM)"
+  [ -z "$T_SOC" ] && echo "  ! suhu SoC tidak terbaca -> monitor hanya mengandalkan baterai/skin"
+  echo "[hasil tulis] ok=$(grep -c '^ok' "$RUNDIR/writes") dibulatkan-kernel=$(grep -c '^diff' "$RUNDIR/writes") DITOLAK=$(grep -c '^rej' "$RUNDIR/writes")"
+  grep '^rej' "$RUNDIR/writes" | head -n 15
+  echo "[revert] cleanup_all"
+  cleanup_all
+  take_snap "$snap2"
+  if diff "$snap" "$snap2" >/dev/null 2>&1; then echo "[verifikasi] SEMUA nilai kembali ke kondisi awal: LULUS"
+  else echo "[verifikasi] ADA nilai yang tidak kembali (mungkin diubah sistem saat test):"; diff "$snap" "$snap2" | head -n 20; fi
+  rm -f "$snap" "$snap2"
+  echo "[fps] sumber tersedia: ${FPS_ORDER:-tidak ada} (sumber sebenarnya baru bisa diuji saat game berjalan: lihat 'azenith-ai fps' saat main)"
+  echo "Laporan lengkap: $SCANDIR/scan_report.txt  | kirim hasil 'azenith-ai report' bila ada yang aneh."
+}
+
+# ---------------------------------------------------------------------
+# LOG PER FITUR otomatis (OK / ERR / BUG) untuk SEMUA perintah fitur.
+# Perintah dijalankan ulang oleh dirinya sendiri (AZ_NOFLOG=1 supaya tidak
+# berulang); stdout/stderr/exit-code diteruskan APA ADANYA, jadi WebUI &
+# skrip lain yang memanggil CLI tidak merasakan perbedaan. Perintah yang
+# hanya membaca (status/log/devinfo/monitor/...) TIDAK dicatat.
+# Baca hasilnya: azenith-ai flog [fitur|all] [ok|err|bug|info] [jumlah]
+# ---------------------------------------------------------------------
+flog_feature_of() { # flog_feature_of <args CLI...> -> nama fitur, kosong = tidak dicatat
+  case "$1" in
+    on|off|auto|toggle) echo MODE ;;
+    scan) echo SCAN ;;
+    report) echo REPORT ;;
+    selftest) echo SELFTEST ;;
+    doctor) echo DOCTOR ;;
+    preset) echo PRESET ;;
+    start|stop|restart|enable) echo DAEMON ;;
+    set) case "$2" in
+           THERMAL_KILL) echo THERMALKILL ;; AKS_ON) echo KILLSEC ;; FEAT_TOUCH) echo TOUCHBOOST ;;
+           NETBOOST) echo NETBOOST ;; WIFILL) echo WIFILL ;; PERFLITE) echo PERFLITE ;; WIFITWEAK) echo WIFITWEAK ;; HZ|HZ_TARGET) echo HZ ;; FRAMERATE|FRAMERATE_TARGET) echo FRAMERATE ;; BYPASS_THERMAL) echo BYPASS_THERMAL ;; THERMAL_DAILY) echo THERMAL_DAILY ;;
+           PRESET) echo PRESET ;; *) echo CONFIG ;;
+         esac ;;
+    game) case "$2" in add|del) echo GAMELIST ;; cooling) case "$3" in set|off) echo COOLING ;; esac ;; fps) case "$3" in set|del) echo GAMEFPS ;; esac ;; esac ;;
+    cooling) [ "$2" = reset ] && echo COOLING ;;
+    zram) case "$2" in apply|auto|off) echo ZRAM ;; esac ;;
+    gfx) [ "$2" = universal ] && case "$3" in set|off) echo GFXAPI ;; esac ;;
+    fpsgo) [ "$2" = reset ] && echo FPSGO ;;
+    thermalkill) case "$2" in on|off|now) echo THERMALKILL ;; esac ;;
+    bypass) case "$2" in on|off) echo BYPASS_THERMAL ;; esac ;;
+    touch) case "$2" in on|off) echo TOUCHBOOST ;; esac ;;
+    killsec) case "$2" in on|off) echo KILLSEC ;; esac ;;
+    thermal) [ "$2" = daily ] && case "$3" in on|off) echo THERMAL_DAILY ;; esac ;;
+    charge) case "$2" in on|off) echo CHARGE ;; esac ;;
+    netboost) case "$2" in on|off) echo NETBOOST ;; esac ;;
+    net) echo NETPRO ;;
+    wifill) case "$2" in on|off) echo WIFILL ;; esac ;;
+    cpuspoof) case "$2" in on|set|off|restore|restart) echo CPUSPOOF ;; esac ;;
+    devspoof) case "$2" in on|set|off|restart) echo DEVSPOOF ;; esac ;;
+    perflite) case "$2" in on|off) echo PERFLITE ;; esac ;;
+    cpucore) case "$2" in on|off|boot) echo CPUCORE ;; esac ;;
+    wifitweak) case "$2" in on|off) echo WIFITWEAK ;; esac ;;
+    hz) case "$2" in on|off|set) echo HZ ;; esac ;;
+    framerate) case "$2" in on|off|set) echo FRAMERATE ;; esac ;;
+    cleaner) case "$2" in scan|""|clean) echo CLEANER ;; esac ;;
+    test) echo TEST ;;
+    safe) case "$2" in on|off) echo SAFEMODE ;; esac ;;
+    freq) case "$2" in cpu|gpu) echo FREQ ;; esac ;;
+    kernel) case "$2" in scan|match|apply|revert) echo KERNEL ;; esac ;;
+    webui) case "$2" in hide|show) echo WEBUI ;; esac ;;
+  esac
+}
+
+if [ -z "$AZ_NOFLOG" ]; then
+  fx_f=$(flog_feature_of "$@")
+  if [ -n "$fx_f" ]; then
+    AZ_NOFLOG=1; export AZ_NOFLOG
+    fx_o="$RUNDIR/flog_cli.out.$$"; fx_e="$RUNDIR/flog_cli.err.$$"; fx_a="$RUNDIR/flog_cli.all.$$"
+    flog "$fx_f" INFO "perintah: azenith-ai $*"
+    sh "$0" "$@" > "$fx_o" 2> "$fx_e"
+    fx_rc=$?
+    cat "$fx_o"; cat "$fx_e" >&2
+    cat "$fx_o" "$fx_e" > "$fx_a" 2>/dev/null
+    flog_judge "$fx_f" "$*" "$fx_rc" "$fx_a"
+    rm -f "$fx_o" "$fx_e" "$fx_a"
+    exit $fx_rc
+  fi
+fi
+
+# ---- flog: baca log per fitur ----
+flog_cmd() { # flog_cmd [fitur|all|list|summary|clear] [level|jumlah] [jumlah]
+  fc_a=$(printf '%s' "$1" | tr 'a-z' 'A-Z')
+  case "$fc_a" in
+    LIST) for fc_f in "$FLOG_DIR"/*.log; do [ -f "$fc_f" ] || continue; fc_n=${fc_f##*/}; [ "$fc_n" = ALL.log ] && continue; echo "${fc_n%.log}"; done; return 0 ;;
+    SUMMARY) # FITUR|ok|err|bug|terakhir  (satu baris per fitur, mudah dibaca WebUI)
+      for fc_f in "$FLOG_DIR"/*.log; do
+        [ -f "$fc_f" ] || continue; fc_n=${fc_f##*/}; [ "$fc_n" = ALL.log ] && continue
+        fc_ok=$(grep -cF ' [OK] ' "$fc_f" 2>/dev/null); fc_er=$(grep -cF ' [ERR] ' "$fc_f" 2>/dev/null); fc_bg=$(grep -cF ' [BUG] ' "$fc_f" 2>/dev/null)
+        fc_last=$(grep -vF ' [INFO] ' "$fc_f" 2>/dev/null | tail -n 1 | cut -c1-14)
+        echo "${fc_n%.log}|${fc_ok:-0}|${fc_er:-0}|${fc_bg:-0}|$fc_last"
+      done; return 0 ;;
+    CLEAR)
+      fc_t=$(printf '%s' "$2" | tr 'a-z' 'A-Z')
+      if [ -z "$fc_t" ] || [ "$fc_t" = ALL ]; then rm -f "$FLOG_DIR"/*.log "$FLOG_DIR"/*.old; echo "semua log fitur dihapus"
+      else case "$fc_t" in *[!A-Z0-9_]*) echo "nama fitur tidak valid"; return 1 ;; esac
+        rm -f "$FLOG_DIR/$fc_t.log" "$FLOG_DIR/$fc_t.log.old"; echo "log fitur $fc_t dihapus"; fi
+      return 0 ;;
+  esac
+  fc_feat=${fc_a:-ALL}; fc_lv=""; fc_n=60
+  for fc_x in "$2" "$3"; do
+    case "$fc_x" in
+      '') ;;
+      *[!0-9]*) fc_lv=$(printf '%s' "$fc_x" | tr 'a-z' 'A-Z') ;;
+      *) fc_n=$fc_x ;;
+    esac
+  done
+  case "$fc_feat" in *[!A-Z0-9_]*) echo "nama fitur tidak valid"; return 1 ;; esac
+  case "$fc_lv" in ''|OK|ERR|BUG|INFO) ;; *) echo "level: ok|err|bug|info"; return 1 ;; esac
+  fc_file="$FLOG_DIR/$fc_feat.log"
+  [ -f "$fc_file" ] || { echo "(belum ada log untuk $fc_feat - jalankan/terapkan fiturnya dulu. Daftar: azenith-ai flog list)"; return 0; }
+  if [ -n "$fc_lv" ]; then grep -F " [$fc_lv] " "$fc_file" | tail -n "$fc_n"; else tail -n "$fc_n" "$fc_file"; fi
+}
+
+case "$1" in
+  status) show_status "$2" ;;
+  on)     setmode on;  rm -f "$RUNDIR/stop"; daemon_alive || start_sup; echo "mode: ON (paksa boost untuk app foreground)" ;;
+  off)    setmode off; echo "mode: OFF (semua tweak direstore oleh daemon dalam beberapa detik)"
+          daemon_alive || { cleanup_all; echo "daemon mati: restore langsung dijalankan"; } ;;
+  auto)   setmode auto; daemon_alive || start_sup; echo "mode: AUTO" ;;
+  toggle) if [ "$(cat "$DATADIR/mode_state" 2>/dev/null)" = off ]; then setmode auto; echo "Zyrox -> AUTO"; else setmode off; echo "Zyrox -> OFF"; fi ;;
+  scan)   scan_all; load_conf; cat "$SCANDIR/scan_report.txt" ;;
+  report) scan_if_needed >/dev/null 2>&1
+          { cat "$SCANDIR/scan_report.txt"; echo; echo "== fpsgo_candidates =="; cat "$SCANDIR/fpsgo_candidates.txt" 2>/dev/null; echo; echo "== efek FPSGO =="; tail -n 30 "$EFFECT_LOG" 2>/dev/null; echo; echo "== conf =="; cat "$CONF"; echo; echo "== 80 baris log =="; tail -n 80 "$LOG"; } | tee "$DATADIR/report.txt"
+          echo; echo "(tersimpan di $DATADIR/report.txt)" ;;
+  selftest) selftest ;;
+  preset) case "$2" in auto|cool|balanced|extreme) ;; *) echo "preset: auto|cool|balanced|extreme"; exit 1 ;; esac
+          "$0" set PRESET "$2" ;;
+  set)    case "$2" in ''|*[!A-Z0-9_]*) echo "KEY harus HURUF BESAR/ANGKA/_"; exit 1 ;; esac
+          case "$3" in *[!A-Za-z0-9._,:/-]*) echo "nilai tidak valid"; exit 1 ;; esac
+          # v1.0.9: THERMAL_KILL TIDAK boleh cuma ubah conf (dulu toggle WebUI begitu: tampil ON
+          # tapi penjaga tidak pernah dijalankan -> service thermal tetap running). Lewat tk_on/tk_off.
+          if [ "$2" = HZ ]; then
+            case "$3" in 1) hz_on; exit $? ;; 0) hz_off; exit 0 ;; *) echo "HZ harus 1 atau 0"; exit 1 ;; esac
+          fi
+          if [ "$2" = HZ_TARGET ]; then hz_set "$3"; exit $?; fi
+          if [ "$2" = FRAMERATE ]; then
+            case "$3" in 0) frm_off; exit 0 ;; *) echo "Frame Rate global sudah dihapus - pakai: game fps set <paket> <fps> [profil] [nama]"; exit 1 ;; esac
+          fi
+          if [ "$2" = FRAMERATE_TARGET ]; then echo "Frame Rate global sudah dihapus - pakai: game fps set <paket> <fps> [profil] [nama]"; exit 1; fi
+          case "$2" in
+            NP_QDISC) np_main qdisc "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_MTU) np_main mtu "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_DNS) np_main dns "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_ADV) np_main adv "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_NICOFF) np_main nicoff "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_CONNTRACK) np_main conntrack "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_IPV6OFF) np_main ipv6off "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_DATASAVER) np_main datasaver "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_NETSTATE) np_main netstate "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_LTECA) np_main lteca "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_ISOLATE) np_main isolate "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_BOOST) np_main boost "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+            NP_AUTO) np_main auto "$([ "$3" = 1 ] && echo on || echo off)"; exit $? ;;
+          esac
+          if [ "$2" = WIFITWEAK ]; then
+            case "$3" in 1) wt_on; exit $? ;; 0) wt_off; exit 0 ;; *) echo "WIFITWEAK harus 1 atau 0"; exit 1 ;; esac
+          fi
+          if [ "$2" = PERFLITE ]; then
+            case "$3" in 1) pl_on; exit $? ;; 0) pl_off; exit 0 ;; *) echo "PERFLITE harus 1 atau 0"; exit 1 ;; esac
+          fi
+          if [ "$2" = WIFILL ]; then
+            case "$3" in 1) wl_on; exit $? ;; 0) wl_off; exit 0 ;; *) echo "WIFILL harus 1 atau 0"; exit 1 ;; esac
+          fi
+          if [ "$2" = THERMAL_KILL ]; then
+            case "$3" in
+              1) tk_on quick; exit 0 ;;
+              0) tk_off; exit 0 ;;
+              *) echo "THERMAL_KILL harus 1 atau 0"; exit 1 ;;
+            esac
+          fi
+          # AKS_ON (lib/killsec.sh) sama alasannya dengan THERMAL_KILL di atas:
+          # tidak boleh cuma ubah conf diam-diam - lewat aks_on/aks_off supaya
+          # kalau sedang main game, kuncian min=max langsung diterapkan/dilepas
+          # SAAT toggle ditekan, bukan menunggu game berikutnya.
+          if [ "$2" = AKS_ON ]; then
+            case "$3" in
+              1) aks_on; exit 0 ;;
+              0) aks_off; exit 0 ;;
+              *) echo "AKS_ON harus 1 atau 0"; exit 1 ;;
+            esac
+          fi
+          # FEAT_TOUCH sama alasannya: toggle WebUI harus langsung berefek ke
+          # kernel (fpsgo_enable/stop_boost/perfserv_ta atau GED), terutama
+          # saat dimatikan - supaya tidak nunggu game berhenti sendiri dulu.
+          if [ "$2" = FEAT_TOUCH ]; then
+            case "$3" in
+              1) tb_on; exit 0 ;;
+              0) tb_off; exit 0 ;;
+              *) echo "FEAT_TOUCH harus 1 atau 0"; exit 1 ;;
+            esac
+          fi
+          grep -q "^$2=" "$CONF" 2>/dev/null || grep "^$2=" "$MODDIR/azenith-ai.conf.default" >> "$CONF" 2>/dev/null
+          grep -q "^$2=" "$CONF" 2>/dev/null || { echo "KEY '$2' tidak ada di config"; exit 1; }
+          sed -i "s/^$2=[^ #]*/$2=$3/" "$CONF" && echo "$2=$3 (berlaku maksimal ~90 dtk saat tidak sedang main)" ;;
+  game)   case "$2" in
+            add) case "$3" in ''|*[!A-Za-z0-9_.]*) echo "nama paket tidak valid"; exit 1 ;; esac
+                 echo "$3" >> "$DATADIR/games.user"; games_build; echo "ditambah: $3" ;;
+            del) if [ -f "$DATADIR/games.user" ]; then grep -vxF "$3" "$DATADIR/games.user" > "$DATADIR/games.user.t"; mv -f "$DATADIR/games.user.t" "$DATADIR/games.user"; fi; games_build; echo "dihapus: $3" ;;
+            list) games_build; cat "$RUNDIR/games.list" ;;
+            listuser) [ -f "$DATADIR/games.user" ] && cat "$DATADIR/games.user" ;;
+            downscale) case "$3" in
+                 set) case "$4" in
+                        ''|*[!A-Za-z0-9_.]*) echo "nama paket tidak valid"; exit 1 ;;
+                      esac
+                      case "$5" in
+                        10|20|25|30|40|50|60|70|80|90|100) ;;
+                        *) echo "persen harus salah satu: 100/90/80/70/60/50/40/30/25/20/10"; exit 1 ;;
+                      esac
+                      ds_set_conf "$4" "$5"
+                      ds_apply "$4" "$5" ;;
+                 off) ds_remove_conf "$4"; ds_apply "$4" 100 ;;
+                 get) ds_g=$(ds_get "$4"); echo "${ds_g:-100}" ;;
+                 list) ds_list ;;
+                 *) echo "game downscale set <paket> <100|90|80|70|60|50|40|30|25|20|10> | off <paket> | get <paket> | list" ;;
+               esac ;;
+            fps) shift 2; gf_cli "$@" ;;
+            cooling) case "$3" in
+                 set) cool_set_cli "$4" "$5" ;;
+                 off) cool_set_cli "$4" 0 ;;
+                 get) cl_g=$(cool_get "$4"); echo "${cl_g:-0}" ;;
+                 list) cool_list ;;
+                 *) echo "game cooling set <paket> <0-4> | off <paket> | get <paket> | list" ;;
+               esac ;;
+            *) echo "game add|del|list <paket> | fps set <paket> <fps> [hemat|standar|performa] [nama]|del|get|list | downscale set <paket> <100|90|80|70|60|50|40|30|25|20|10>|off|get|list | cooling set|off|get|list" ;;
+          esac ;;
+  zram)   case "$2" in
+            status|"") zr_status ;;
+            apply) zr_apply "$3" "$4" "$5" ;;
+            auto) zr_auto ;;
+            off) zr_off ;;
+            boot) zr_boot_set "$3" ;;
+            snapshot) zr_snapshot ;;
+            *) echo "azenith-ai zram status | apply <algo> <MB> [swappiness] | auto | off | snapshot | boot on|off   (/sys/block/zram0: swapoff>reset>comp_algorithm>disksize>mkswap>swapon)" ;;
+          esac ;;
+  cooling) case "$2" in
+            status|'') cool_status ;;
+            reset) cool_reset ;;
+            *) echo "cooling status | reset   (per game: game cooling set <paket> <0-4>)" ;;
+          esac ;;
+  gfx)    case "$2" in
+            universal) case "$3" in
+                         set)       gu_on "$4" ;;
+                         off)       gu_off ;;
+                         status|"") gu_status ;;
+                         *) echo "azenith-ai gfx universal set <vulkan|skiavk|skiagl> | off | status" ;;
+                       esac ;;
+            *) echo "azenith-ai gfx universal set <vulkan|skiavk|skiagl> | off | status   (Graphics API Universal - berlaku SELURUH SISTEM, bukan per-game, otomatis kedeteksi DevCheck, tahan reboot)" ;;
+          esac ;;
+  apps) { pm list packages 2>/dev/null || cmd package list packages 2>/dev/null; } | sed -n 's/^package://p' | sort -u ;;
+  fpsgo)
+    case "$2" in
+      nodes) scan_if_needed >/dev/null 2>&1; cat "$SCANDIR/fpsgo_candidates.txt" 2>/dev/null || echo "belum ada (jalankan: azenith-ai scan)" ;;
+      reset) if [ -n "$3" ]; then rm -f "$LEARNDIR/$3.fpsgo"; echo "hasil uji $3 dihapus"; else rm -f "$LEARNDIR"/*.fpsgo; echo "semua hasil uji dihapus (diuji ulang di game berikutnya)"; fi ;;
+      *) echo "=== FPSGO: parser, grup node, hasil uji A/B ==="
+         echo "Game aktif   : $(cat "$RUNDIR/game" 2>/dev/null || echo -)"
+         echo "File sumber  : $(cat "$RUNDIR/fps_src_cands" 2>/dev/null | head -n 5 | tr '\n' ' ')"
+         echo "Diagnosis    : $(cat "$RUNDIR/fpsgo_diag" 2>/dev/null || echo '(belum ada, jalankan game)')"
+         echo "FPS/plafon/level: $(cat "$RUNDIR/fps_now" 2>/dev/null || echo -)"
+         echo "--- status grup (grup|status|node|selisih dalam 0.1%|delta jank) ---"
+         cat "$RUNDIR/fpsgo_state" 2>/dev/null || echo "(tidak ada sesi game)"
+         echo "--- hasil uji tersimpan (paket: grup|verdict|selisih 0.1%|jank|waktu|kernel) ---"
+         for lf in "$LEARNDIR"/*.fpsgo; do [ -f "$lf" ] || continue; echo "[${lf##*/}]"; cat "$lf"; done
+         echo "--- 20 baris terakhir efek ---"; tail -n 20 "$EFFECT_LOG" 2>/dev/null ;;
+    esac ;;
+  thermalkill) case "$2" in
+      on) tk_on "$3" ;; off) tk_off ;; now) tk_now ;;
+      status|verify|"") tk_status ;;
+      *) echo "azenith-ai thermalkill on|off|now|status" ;;
+    esac ;;
+  bypass) case "$2" in
+      on) by_on ;; off) by_off ;;
+      status|"") by_status ;;
+      *) echo "azenith-ai bypass on|off|status" ;;
+    esac ;;
+  touch) case "$2" in
+      on) tb_on ;; off) tb_off ;;
+      status|"") tb_status ;;
+      *) echo "azenith-ai touch on|off|status   (Touch Boost: fpsgo_enable/stop_boost/perfserv_ta atau GED, langsung ke kernel)" ;;
+    esac ;;
+  killsec) case "$2" in
+      on) aks_on ;; off) aks_off ;;
+      status|"") aks_status ;;
+      *) echo "azenith-ai killsec on|off|status   (Abaikan Keamanan Kernel - kunci CPU min=max ke plafon OC tertinggi HANYA selama game aktif, tidak permanen)" ;;
+    esac ;;
+  thermal) case "$2" in
+      daily) case "$3" in
+               on) td_on ;; off) td_off ;;
+               status|"") td_status ;;
+               *) echo "azenith-ai thermal daily on|off|status" ;;
+             esac ;;
+      *) echo "azenith-ai thermal daily on|off|status   (Thermal Lock Daily - fitur A thermal lock/inject non-stop, DI LUAR & DI DALAM sesi game; independen dari Disable Thermal/thermalkill)" ;;
+    esac ;;
+  charge) case "$2" in
+      on) chg_on ;; off) chg_off ;;
+      diag) chg_diag ;;
+      status|"") chg_status ;;
+      *) echo "azenith-ai charge on|off|status|diag" ;;
+    esac ;;
+  fastcharge) case "$2" in
+      on) fc_on ;; off) fc_off ;;
+      diag) fc_diag ;;
+      power) vx_power ;;
+      scan) vx_scan ;;
+      status|"") fc_status ;;
+      *) echo "azenith-ai fastcharge on|off|status|diag|power|scan   (matikan thermal + VoltEx: paksa arus charge maks 6 A, pengaman 45C -> 3 A)" ;;
+    esac ;;
+  webui) case "$2" in
+      hide) if [ -d "$MODDIR/webroot" ] && [ ! -e "$MODDIR/ui" ]; then mv "$MODDIR/webroot" "$MODDIR/ui" && echo "Tombol WebUI: DISEMBUNYIKAN (UI aman di ui/, tidak dihapus)"
+            elif [ -d "$MODDIR/ui" ]; then echo "Tombol WebUI: sudah tersembunyi"
+            else echo "GAGAL: folder UI tidak ditemukan"; exit 1; fi ;;
+      show) if [ -d "$MODDIR/ui" ] && [ ! -e "$MODDIR/webroot" ]; then mv "$MODDIR/ui" "$MODDIR/webroot" && echo "Tombol WebUI: DITAMPILKAN (UI di webroot/)"
+            elif [ -d "$MODDIR/webroot" ]; then echo "Tombol WebUI: sudah tampil"
+            else echo "GAGAL: folder UI tidak ditemukan"; exit 1; fi ;;
+      status|"") if [ -d "$MODDIR/webroot" ]; then echo "webui=tampil (UI di webroot/)"; elif [ -d "$MODDIR/ui" ]; then echo "webui=tersembunyi (UI di ui/)"; else echo "webui=UI hilang"; fi ;;
+      *) echo "azenith-ai webui hide|show|status" ;;
+    esac ;;
+  netboost) case "$2" in
+      on) nb_on ;; off) nb_off ;;
+      status|"") nb_status ;;
+      *) echo "azenith-ai netboost on|off|status   (NSS/optimasi TCP-IP + fix latency, persisten)" ;;
+    esac ;;
+  framerate) case "$2" in
+      off) frm_off ;;
+      diag) frm_diag ;;
+      status|"") echo "Frame Rate global dipensiunkan (v1.0.30): FPS kini diatur PER GAME."; echo "legacy_framerate=$FRAMERATE"; echo "data per game:"; gf_list | sed 's/^/  /' ;;
+      on|set) echo "Frame Rate global sudah dihapus. Pakai: azenith-ai game fps set <paket> <fps> [hemat|standar|performa] [nama]"; exit 1 ;;
+      *) echo "azenith-ai framerate off|status|diag   (legacy: pulihkan nilai lama). FPS per game: azenith-ai game fps set|del|get|list" ;;
+    esac ;;
+  hz) case "$2" in
+      on) hz_on "$3" ;; off) hz_off ;;
+      set) hz_set "$3" ;;
+      modes) hz_modes ;;
+      diag) hz_diag ;;
+      status|"") hz_status ;;
+      *) echo "azenith-ai hz on [hz]|off|set <hz>|modes|diag|status   (Refresh Rate: peak/min_refresh_rate + content detection SurfaceFlinger off; target harus ada di mode panel)" ;;
+    esac ;;
+  net) shift; np_main "$@" ;;
+  wifitweak) case "$2" in
+      on) wt_on ;; off) wt_off ;;
+      status|"") wt_status ;;
+      *) echo "azenith-ai wifitweak on|off|status   (WiFi Tweak: 15 perintah cmd wifi, persisten tahan reboot)" ;;
+    esac ;;
+  perflite) case "$2" in
+      on) pl_on ;; off) pl_off ;;
+      status|"") pl_status ;;
+      *) echo "azenith-ai perflite on|off|status   (Perf Lite: hanya bareng Balanced; PowerSaver & ZAI-Turbo dikunci, Fast Charger otomatis mati)" ;;
+    esac ;;
+  cpucore) case "$2" in
+      on|off) cc_set "${3:-all}" "$2" ;;
+      boot) cc_boot_set "$3" ;;
+      status|"") cc_status ;;
+      apply) cc_enforce >/dev/null; cc_status ;;
+      *) echo "azenith-ai cpucore off|on <nomor core|a|b|all> | boot on|off | status   (core dimatikan lewat /sys/devices/system/cpu/cpuN/online; cpu0 tidak pernah disentuh; a = cpu1-5, b = cpu6+)" ;;
+    esac ;;
+  gpudrv|driver) shift; MODDIR="$MODDIR" sh "$MODDIR/gpu_driver.sh" "$@" ;;
+  cpuspoof|spoof) shift; MODDIR="$MODDIR" sh "$MODDIR/cpu_spoof.sh" "$@" ;;
+  devspoof) shift; MODDIR="$MODDIR" sh "$MODDIR/dev_spoof.sh" "$@" ;;
+  wifill) case "$2" in
+      on) wl_on ;; off) wl_off ;;
+      status|"") wl_status ;;
+      *) echo "azenith-ai wifill on|off|status   (WiFi Low Latency: force-low-latency-mode + matikan hemat daya radio Wi-Fi, persisten)" ;;
+    esac ;;
+  test)   case "$2" in
+      gfxapi)  gfx_test ;;
+      perf)    perf_test ;;
+      cleaner) cl_test ;;
+      charge)  chg_test ;;
+      all)     gfx_test; perf_test; cl_test; chg_test ;;
+      *) echo "azenith-ai test gfxapi | perf | cleaner | charge | all   (jalankan fitur & baca balik nilai NYATA dari kernel, hasil ditulis ke $DATADIR/test_logs/<fitur>.txt)" ;;
+    esac ;;
+  cleaner) case "$2" in
+      scan|"") cl_scan ;;
+      clean) case "$3" in
+          cache|trash|dalvik|crash|ota|tmp|soft|agresif|all) cl_clean "$3" ;;
+          *) echo "azenith-ai cleaner clean <soft|agresif|cache|trash|dalvik|crash|ota|tmp>"; exit 1 ;;
+        esac ;;
+      *) echo "azenith-ai cleaner scan | cleaner clean <soft|agresif|cache|trash|dalvik|crash|ota|tmp>   (soft=cache+trash ringan, agresif=SEMUA kategori total; TIDAK menyentuh /data/system/ selain package_cache & dropbox, bukan antivirus)" ;;
+    esac ;;
+  dnd) case "$2" in
+      status|"") dnd_status ;;
+      *) echo "azenith-ai dnd status   (DND In-Game - aktif/lepas OTOMATIS mengikuti sesi game, toggle lewat 'azenith-ai set FEAT_DND_INGAME 1|0' atau WebUI tab Fitur)" ;;
+    esac ;;
+  freeze) case "$2" in
+      status|"") freeze_status ;;
+      addsys) case "$3" in
+          ''|*[!A-Za-z0-9_.]*) echo "nama paket tidak valid"; exit 1 ;;
+        esac
+        fz_g=$(freeze_guard_list)
+        if freeze_is_guarded "$3" "$fz_g"; then
+          echo "DITOLAK: '$3' ada di daftar wajib-aman (FREEZE_GUARD/launcher/IME aktif sekarang) - tidak boleh dibekukan"; exit 1
+        fi
+        grep -qxF "$3" "$FREEZE_SYS_F" 2>/dev/null || echo "$3" >> "$FREEZE_SYS_F"
+        echo "ditambah ke whitelist freeze sistem: $3 (baru berlaku kalau FREEZE_INCLUDE_SYSTEM=1 juga aktif)" ;;
+      delsys) if [ -f "$FREEZE_SYS_F" ]; then grep -vxF "$3" "$FREEZE_SYS_F" > "$FREEZE_SYS_F.t"; mv -f "$FREEZE_SYS_F.t" "$FREEZE_SYS_F"; fi
+        echo "dihapus dari whitelist freeze sistem: $3" ;;
+      listsys) [ -f "$FREEZE_SYS_F" ] && cat "$FREEZE_SYS_F" ;;
+      keep) case "$3" in
+          ''|*[!A-Za-z0-9_.]*) echo "nama paket tidak valid"; exit 1 ;;
+        esac
+        grep -qxF "$3" "$FREEZE_KEEP_F" 2>/dev/null || echo "$3" >> "$FREEZE_KEEP_F"
+        echo "ditambah ke keep-list (TIDAK akan dibekukan): $3" ;;
+      unkeep) if [ -f "$FREEZE_KEEP_F" ]; then grep -vxF "$3" "$FREEZE_KEEP_F" > "$FREEZE_KEEP_F.t"; mv -f "$FREEZE_KEEP_F.t" "$FREEZE_KEEP_F"; fi
+        echo "dihapus dari keep-list: $3" ;;
+      listkeep) [ -f "$FREEZE_KEEP_F" ] && cat "$FREEZE_KEEP_F" ;;
+      *) echo "azenith-ai freeze status | addsys/delsys/listsys <paket> | keep/unkeep/listkeep <paket>   (Freeze In-Game - pihak ketiga otomatis, sistem HANYA dari whitelist addsys + FREEZE_INCLUDE_SYSTEM=1)" ;;
+    esac ;;
+  safe)   case "$2" in
+            on) touch "$DATADIR/tk_off"
+                for kv in THERMAL_KILL=0 SF_BOOT_PROPS=0 TK_BLOCK=0 TK_KERNEL=0 TK_KILL_PROCS=0 RAM_KILL_BG=0 OC_BOOT_APPLY=0 FEAT_SURFACEFLINGER=0 FEAT_LOG_REDUCE=0 FEAT_IO=0 NETBOOST=0; do "$0" set "${kv%%=*}" "${kv#*=}" >/dev/null 2>&1; done
+                tk_off >/dev/null 2>&1
+                echo "MODE AMAN aktif: Thermal Kill, prop SF, overclock-boot, IO, log-reduce, netboost dimatikan. REBOOT sekarang lalu uji aplikasi." ;;
+            off) rm -f "$DATADIR/tk_off"
+                for kv in THERMAL_KILL=1 OC_BOOT_APPLY=1 FEAT_SURFACEFLINGER=1 FEAT_LOG_REDUCE=1 FEAT_IO=1; do "$0" set "${kv%%=*}" "${kv#*=}" >/dev/null 2>&1; done
+                echo "MODE AMAN dimatikan (SF_BOOT_PROPS, TK_BLOCK, TK_KERNEL tetap 0). Nyalakan satu-satu: azenith-ai set KEY 1" ;;
+            *) for k in THERMAL_KILL SF_BOOT_PROPS TK_BLOCK TK_KERNEL TK_KILL_PROCS RAM_KILL_BG OC_BOOT_APPLY FEAT_SURFACEFLINGER FEAT_LOG_REDUCE FEAT_IO FEAT_NETWORK FEAT_FREQ NETBOOST; do echo "$k=$(sed -n "s/^$k=\([^ #]*\).*/\1/p" "$CONF" 2>/dev/null | tail -n 1)"; done
+               [ -f "$DATADIR/tk_off" ] && echo "tk_off=ada (Thermal Kill tidak dinyalakan saat boot)" ;;
+          esac ;;
+  freq)
+    scan_if_needed >/dev/null 2>&1
+    case "$2" in
+      status)
+        fn=$(oc_cpu_count); echo "cpu_count=$fn"; fi=1
+        while [ "$fi" -le "$fn" ]; do
+          IFS='|' read -r fna fpath fmin fmax fw ft <<EOF
+$(oc_cpu_line "$fi")
+EOF
+          ftab="$ft"; [ -n "$ftab" ] || ftab=$(cat "$fpath/scaling_available_frequencies" 2>/dev/null)
+          echo "cpu${fi}_name=$fna"; echo "cpu${fi}_min=$fmin"; echo "cpu${fi}_max=$fmax"
+          echo "cpu${fi}_cur=$(read1 "$fpath/scaling_max_freq")"; echo "cpu${fi}_min_cur=$(read1 "$fpath/scaling_min_freq")"; echo "cpu${fi}_table=$(echo $ftab | tr ' ' ',')"
+          fi=$((fi+1))
+        done
+        IFS='|' read -r fb fp fmn fmx < "$SCANDIR/gpu" 2>/dev/null
+        if [ -n "$fp" ]; then
+          ftb=$(cat "$fp/available_frequencies" 2>/dev/null); [ -n "$ftb" ] || ftb=$(cat "$SCANDIR/gpu_tbl" 2>/dev/null); echo "gpu_supported=1"; echo "gpu_backend=$fb"; echo "gpu_cur=$(read1 "$fp/$fmx")"; echo "gpu_min_cur=$(read1 "$fp/$fmn")"; echo "gpu_table=$(echo $ftb | tr ' ' ',')"
+        else echo "gpu_supported=0"; fi
+        ;;
+      cpu)
+        idx=$3; target_min=$4; target_max=$5
+        case "$idx:$target_min:$target_max" in *[!0-9:]*|'':*) echo "parameter tidak valid"; exit 1;; esac
+        IFS='|' read -r fnm fpath fmin fmax fw ft <<EOF
+$(oc_cpu_line "$idx")
+EOF
+        [ -n "$fpath" ] && [ -r "$fpath/scaling_available_frequencies" ] || { echo "tabel frekuensi CPU tidak tersedia"; exit 1; }
+        hardmax=$(read1 "$fpath/cpuinfo_max_freq"); [ -n "$hardmax" ] || hardmax=$fmax
+        hardmin=$(read1 "$fpath/cpuinfo_min_freq"); [ -n "$hardmin" ] || hardmin=$fmin
+        [ "$target_min" -ge "$hardmin" ] && [ "$target_max" -le "$hardmax" ] && [ "$target_min" -le "$target_max" ] || { echo "rentang MIN/MAX di luar batas kernel atau MIN lebih tinggi dari MAX"; exit 1; }
+        table=$(cat "$fpath/scaling_available_frequencies" 2>/dev/null); validmin=0; validmax=0
+        for x in $table; do [ "$x" = "$target_min" ] && validmin=1; [ "$x" = "$target_max" ] && validmax=1; done
+        [ "$validmin" = 1 ] && [ "$validmax" = 1 ] || { echo "MIN/MAX harus berupa titik OPP yang didukung"; exit 1; }
+        # Set ceiling first when raising the floor; lower the floor first when lowering the ceiling.
+        curmax=$(read1 "$fpath/scaling_max_freq"); curmin=$(read1 "$fpath/scaling_min_freq")
+        if [ "$target_min" -gt "$curmax" ]; then oc_raw_write "$fpath/scaling_max_freq" "$target_max" || exit 1; oc_raw_write "$fpath/scaling_min_freq" "$target_min" || exit 1
+        else oc_raw_write "$fpath/scaling_min_freq" "$target_min" || exit 1; oc_raw_write "$fpath/scaling_max_freq" "$target_max" || exit 1; fi
+        echo "CPU cluster $idx MIN=$target_min MAX=$target_max kHz"
+        ;;
+      gpu)
+        target_min=$3; target_max=$4
+        case "$target_min:$target_max" in *[!0-9:]*|'':*) echo "nilai MIN/MAX GPU tidak valid"; exit 1;; esac
+        IFS='|' read -r fb fp fmn fmx < "$SCANDIR/gpu" 2>/dev/null
+        [ -n "$fp" ] && [ -r "$SCANDIR/gpu_tbl" ] || { echo "GPU tidak menyediakan tabel OPP yang aman; pengaturan dilewati"; exit 1; }
+        table=$(cat "$SCANDIR/gpu_tbl" 2>/dev/null); validmin=0; validmax=0
+        for x in $table; do [ "$x" = "$target_min" ] && validmin=1; [ "$x" = "$target_max" ] && validmax=1; done
+        [ "$validmin" = 1 ] && [ "$validmax" = 1 ] && [ "$target_min" -le "$target_max" ] || { echo "MIN/MAX GPU harus titik OPP valid dan MIN tidak boleh melebihi MAX"; exit 1; }
+        curmax=$(read1 "$fp/$fmx"); curmin=$(read1 "$fp/$fmn")
+        if [ "$target_min" -gt "$curmax" ]; then oc_raw_write "$fp/$fmx" "$target_max" || exit 1; oc_raw_write "$fp/$fmn" "$target_min" || exit 1
+        else oc_raw_write "$fp/$fmn" "$target_min" || exit 1; oc_raw_write "$fp/$fmx" "$target_max" || exit 1; fi
+        echo "GPU MIN=$target_min MAX=$target_max"
+        ;;
+      *) echo "freq status | freq cpu <cluster> <min-kHz> <max-kHz> | freq gpu <min> <max>"; exit 1;;
+    esac ;;
+  devinfo) case "$2" in live) devinfo_live ;; *) devinfo_all ;; esac ;;
+  monitor) devinfo_monitor "$2" ;;
+  netinfo) dv_net_radio ;;
+  ping) net_ping_once ;;
+  gpuinfo) dv_gpu_vendor; echo "vendor=${GV_VENDOR:-tidak teridentifikasi}"; echo "model=${GV_NAME}" ;;
+  fps)    cat "$RUNDIR/fps_now" 2>/dev/null || echo "belum ada data (jalankan game dulu)"; echo "format: fps plafon level" ;;
+  kernel)
+    case "$2" in
+      scan)  kernel_scan_run "$3" ;;
+      features) ks_features_run ;;
+      match) [ -n "$3" ] || { echo "azenith-ai kernel match <path berkas>"; exit 1; }
+             kernel_match_run "$3" ;;
+      apply) kernel_match_apply "$3" ;;
+      revert) kernel_match_revert ;;
+      *) echo "azenith-ai kernel scan [berkas] | kernel features | kernel match <berkas> | kernel apply [force] | kernel revert" ;;
+    esac ;;
+  profile) [ -n "$2" ] || { echo "azenith-ai profile <default|saver|azetturbo>"; exit 1; }
+           profile_apply "$2" ;;
+  log)    tail -n "${2:-40}" "$LOG" ;;
+  flog)   shift; flog_cmd "$@" ;;
+  start)  start_sup ;;
+  stop)   touch "$RUNDIR/stop"; echo "stop diminta" ;;
+  restart) touch "$RUNDIR/stop"; sleep 4; start_sup ;;
+  enable) rm -f "$MODDIR/disable"; echo 0 > "$DATADIR/boot_count"; rm -f "$RUNDIR/stop"; start_sup; echo "module diaktifkan kembali" ;;
+  doctor)
+    echo "=== Zyrox doctor ==="
+    for f in common.sh lib/core.sh lib/profile.sh lib/scan.sh lib/thermal.sh lib/perf.sh lib/overclock.sh lib/fps.sh lib/fpsgo.sh lib/fpsgo_parse.awk lib/kernel_match.sh lib/kernel_scan.sh lib/misc.sh lib/devinfo.sh lib/thermalkill.sh lib/tkloop.sh lib/bypass.sh lib/killsec.sh lib/modelock.sh lib/charge.sh lib/chargeloop.sh lib/netboost.sh lib/wifill.sh lib/perflite.sh lib/wifitweak.sh lib/netpro.sh lib/netwatch.sh lib/hz.sh lib/framerate.sh lib/gamefps.sh lib/booster.sh lib/downscale.sh lib/cooling.sh lib/zram.sh lib/dnd.sh lib/freeze.sh lib/daemon.sh lib/supervisor.sh cpu_spoof.sh dev_spoof.sh post-fs-data.sh service.sh safe_trigger.sh; do
+      [ -f "$MODDIR/$f" ] && echo "  [OK] $f" || echo "  [HILANG] $f"
+    done
+    echo "- restore semua state"; cleanup_all
+    rm -f "$MODDIR/disable" "$RUNDIR/stop"; echo 0 > "$DATADIR/boot_count"
+    echo "- scan ulang"; scan_all; load_conf
+    echo "- laporan -> $DATADIR/report.txt"; "$0" report >/dev/null 2>&1
+    echo "Selesai. Reboot untuk memastikan bersih." ;;
+  *) echo "Pemakaian: azenith-ai status|on|off|auto|toggle|scan|report|selftest|doctor|preset|game|apps|set|fps|fpsgo|kernel|devinfo|monitor|netinfo|ping|gpuinfo|thermalkill|bypass|killsec|thermal|charge|fastcharge|webui|netboost|net|wifill|wifitweak|hz|framerate|perflite|spoof|devspoof|touch|profile|dnd|freeze|cleaner|safe|freq|test|log|flog|start|stop|restart|enable"; exit 1 ;;
+esac

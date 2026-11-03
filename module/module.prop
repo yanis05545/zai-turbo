@@ -1,0 +1,9 @@
+id=zyrox-mod
+name=Zyrox
+version=v1.0.41-zai
+versionCode=1164
+author=Zyrox
+description=ZYROX is an advanced Android root module designed to optimize gaming performance, improve FPS stability, and enhance overall system responsiveness.
+It features CPU/GPU control, four performance modes, FPS optimization, per-game settings, and intelligent thermal management.
+Includes Network Pro, Net Boost, Fast Charger, VOLTEX, zRAM Manager, Core CPU Control, and Device/Processor Spoofing.
+Built with kernel-level optimization, compatibility detection, automatic configuration, backup and restore, and real-time monitoring. Supports Magisk, KernelSU, and APatch.

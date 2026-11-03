@@ -1,0 +1,318 @@
+#!/system/bin/sh
+# =====================================================================
+#  Zyrox - system/bin/azenith-thermal
+#  Wrapper 4-mode (balance|saver|gaming|extreme) di atas properti
+#  sys.azenith.thermal.state. v1.0.9-fix2.
+#
+#  PENTING: skrip ini TIDAK menulis sysfs mentah sendiri. Semua efek
+#  thermal/perf dijalankan lewat subsistem modul yang SUDAH ADA dan
+#  SUDAH teruji (lib/thermal.sh thermal_apply, lib/bypass.sh by_on/by_off,
+#  lib/perf.sh preset_params, lib/modelock.sh ml_apply) supaya backup/
+#  revert/safety-trip yang sudah dibangun di sana tetap berlaku. Ini juga
+#  alasan "gaming" dan "extreme" di sini TIDAK memakai lib/thermalkill.sh
+#  (kill -9 + BLOCK) langsung - itu sumber crash/jaringan-blokir yang
+#  sudah dipatch di service.sh & lib/thermalkill.sh; "extreme" di sini
+#  hanya mengizinkan THERMAL_KILL=1 (sekarang aman berkat pengaman
+#  combo-binary) sebagai pilihan sadar user, bukan default paksa.
+#
+#  v1.0.9-fix2: SETIAP mode sekarang juga mengunci frekuensi CPU & GPU
+#  secara LANGSUNG lewat lib/modelock.sh (ml_apply), bukan cuma mengatur
+#  ambang thermal/preset yang baru kelihatan efeknya kalau ada game
+#  terdeteksi berjalan (lib/fps.sh). Artinya begitu mode ditekan di WebUI,
+#  freq CPU/GPU langsung berubah SEKARANG JUGA, tanpa perlu buka game:
+#    balance : floor dilepas (governor bebas naik-turun), ceiling = stock
+#              (atau OC manual user kalau sedang diset) - standar hemat
+#              baterai + performa wajar.
+#    saver   : ceiling CPU & GPU ditarik ke ~60% tabel OPP (floor tetap
+#              dilepas, SoC boleh idle serendah mungkin) - paling dingin/hemat.
+#    gaming  : ceiling dibuka penuh (stock/OC) + floor dinaikkan ke ~72%
+#              tabel supaya clock tidak jatuh-bangun saat FPS turun
+#              sesaat (lebih stabil), tapi TIDAK dikunci mati ke satu titik.
+#    extreme (nama tampilan: "ZAI-Turbo", alias CLI: turbo/zetturbo) :
+#              floor = ceiling = titik tertinggi (stock+headroom/OC) -
+#              CPU & GPU benar2 dikunci ke clock maksimum terus-menerus.
+#
+#  v1.0.9-fix23: SETIAP mode sekarang juga mengatur Battery Saver Android
+#  (Settings.Global low_power, lib/powersave.sh ps_apply_mode) secara
+#  REAL-TIME begitu mode ditekan:
+#    saver            -> Battery Saver Android diaktifkan otomatis.
+#    balance/gaming/extreme -> Battery Saver Android dipastikan MATI otomatis
+#                         (gaming & extreme butuh floor/ceiling freq penuh).
+#  Status ini dijaga ulang terus-menerus oleh daemon (lib/daemon.sh ps_watch,
+#  lihat lib/powersave.sh) supaya tidak "lepas" kalau ada pihak lain yang
+#  mengubahnya di luar modul - jadi kapan pun dicek (WebUI/CLI/Settings
+#  Android), hasilnya konsisten dengan mode yang sedang aktif.
+#
+#  Pemakaian: azenith-thermal [balance|saver|extreme|status]  (mode gaming sudah dihapus)
+#  Tanpa argumen atau "status" -> tampilkan getprop sys.azenith.thermal.state
+# =====================================================================
+MODDIR=/data/adb/modules/azenith-ai
+[ -d "$MODDIR" ] || { echo "Zyrox module tidak ditemukan di $MODDIR"; exit 1; }
+export MODDIR
+. "$MODDIR/common.sh"             # load semua lib (core/thermal/perf/overclock/modelock/bypass/thermalkill/...)
+load_conf
+
+PROP="sys.azenith.thermal.state"
+MODE_FILE="$DATADIR/azenith_thermal_mode"   # dibaca ulang oleh service.sh saat boot
+
+[ "$(id -u)" -eq 0 ] || { echo "Error: jalankan sebagai root (su -c azenith-thermal ...)."; exit 1; }
+
+as_setconf() { # as_setconf KEY VAL  (pola sama seperti helper *_setconf lain di modul ini)
+  if grep -q "^$1=" "$CONF" 2>/dev/null; then sed -i "s/^$1=[^ #]*/$1=$2/" "$CONF"
+  else echo "$1=$2" >> "$CONF"; fi
+}
+
+as_set_state() { # daftarkan properti + simpan mode untuk re-apply saat boot
+  # v1.0.9-fix3: dulu nilai yang ditulis ke properti ikut membawa nama
+  # propertinya sendiri ("sys.azenith.thermal.state: $1"), jadi getprop
+  # menampilkan "sys.azenith.thermal.state: sys.azenith.thermal.state: saver"
+  # (dobel). Nilai properti HARUS cuma isinya ("balance"/"saver"/dst) - nama
+  # properti sudah otomatis ikut ditampilkan oleh getprop/resetprop sendiri.
+  setprop "$PROP" "$1"
+  echo "$1" > "$MODE_FILE"
+  # v1.0.44: ZAI-Turbo => 120 FPS semua game (game yang sedang jalan ikut diterapkan/dilepas)
+  command -v gamefps_mode_changed >/dev/null 2>&1 && gamefps_mode_changed
+}
+
+# v1.0.9-fix4: akar masalah "thermal masih stopped" setelah pindah dari
+# gaming/extreme ke saver/balance: mode_balance()/mode_saver() dulu HANYA
+# membalikkan state lewat by_off (kalau BYPASS_THERMAL=1) atau tk_off (kalau
+# THERMAL_KILL=1) - dua jalur yang kondisional dan TIDAK saling tahu satu
+# sama lain. Begitu mode_gaming()'s cabang THERMAL_KILL=1 atau mode_extreme()
+# memanggil thermal_apply() LANGSUNG (tanpa lewat by_on), service thermal
+# yang di-stop oleh thermal_apply (svc_stop, lewat SVCSTACK di lib/core.sh)
+# TIDAK PERNAH direvert oleh salah satu dari by_off/tk_off di atas - stack
+# SVCSTACK/STACK/PROPSTACK itu subsistem terpisah dari TK_SVC milik
+# thermalkill. Hasilnya: service tetap "stopped" selamanya walau sudah
+# pindah ke saver/balance, dan trip_point yang dinaikkan TRIP_RAISE_C bisa
+# menumpuk (compounding) kalau mode di-switch langsung gaming<->extreme
+# tanpa lewat revert di tengahnya.
+#
+# Perbaikan: SETIAP mode sekarang mulai dari reset total (as_reset_all) yang
+# membalikkan KEDUA subsistem (thermalkill via tk_off + thermal.sh/perf.sh
+# via cleanup_all, yang mencakup revert_stack/revert_props/revert_services/
+# thermal_revert) - idempotent, aman dipanggil walau tidak ada state yang
+# perlu direvert. Modelock (ml_apply) TIDAK ikut kena reset ini - dia pakai
+# backup sendiri (lib/overclock.sh oc_raw_write/oc_restore_path) dan selalu
+# di-apply ulang sesudahnya, jadi freq CPU/GPU tidak pernah "kosong" di
+# antara reset dan apply mode baru.
+# v1.0.9-fix37: AKAR MASALAH "gaming <-> ZAI-Turbo output ketukar" (balance &
+# saver normal). $MODE_FILE (dibaca lib/modelock.sh ml_watch tiap ~9 dtk dari
+# daemon) dulu baru ditulis di AKHIR mode_*() lewat as_set_state - padahal
+# gaming & extreme paling lama jalan (by_on/thermal_apply, tk_on + sleep).
+# Selama jendela itu daemon masih membaca mode LAMA dan menerapkan ulang
+# ceiling/floor mode lama TEPAT di atas hasil mode baru: pindah ke gaming ->
+# kena nilai extreme (9999999), pindah ke ZAI-Turbo -> kena nilai gaming
+# (1.8/..). Balance & saver cepat selesai, jadi jarang kena. Perbaikan: mode
+# BARU dicatat di AWAL (as_begin) + lock "sedang pindah mode" yang membuat
+# ml_watch diam, dan kalau ml_watch kebetulan sedang jalan, ditunggu selesai
+# dulu sebelum menulis apa pun.
+# fix41: Fast Charger vs mode balance/saver - 2 JALUR TERPISAH (lihat catatan
+# panjang FC_MODE_LOCK di lib/charge.sh). Selama file ini ada (Fast Charger
+# AKTIF), mode_balance()/mode_saver() TIDAK BOLEH menyentuh thermal_apply/
+# cleanup_all/$CONF sama sekali - cukup keluar lebih dulu, tanpa respon,
+# supaya tidak lagi berebut jalur dengan watchdog fcloop.sh (fc_cmd_on tiap
+# FC_TICK dtk) yang dulu jadi penyebab "thermal mati" begitu Fast Charger
+# dinyalakan bareng/ setelah mode balance atau saver ditekan.
+FC_MODE_LOCK="$RUNDIR/fc_mode_lock"
+as_fc_locked() {
+  [ -f "$FC_MODE_LOCK" ] || return 1
+  echo "Mode '$1' TIDAK DIRESPON: Fast Charger sedang AKTIF (2 jalur terpisah, anti-bentrok)."
+  echo "Matikan Fast Charger dulu (azenith-ai fastcharge off / toggle WebUI) baru mode balance & saver bisa dipakai lagi."
+  flog PROFILE INFO "mode '$1' ditolak - Fast Charger aktif (FC_MODE_LOCK), tidak ada perubahan thermal/CONF"
+  return 0
+}
+
+# Perf Lite (lib/perflite.sh): boleh bersama balance SAJA. saver & extreme (ZAI-Turbo)
+# ditolak selama Perf Lite AKTIF = PERFLITE=1 di conf (kunci runtime hanya turunan, lihat as_pl_locked).
+PL_MODE_LOCK="$RUNDIR/pl_mode_lock"
+as_pl_locked() {
+  # v1.0.34: SUMBER KEBENARAN = PERFLITE di conf (sama dengan yang dibaca toggle WebUI).
+  # Dulu berkas kunci runtime SAJA sudah cukup untuk menolak mode - kalau berkas itu
+  # tertinggal (basi) padahal toggle Perf Lite sudah OFF, saver/ZAI-Turbo tetap ditolak
+  # dengan pesan "Perf Lite sedang AKTIF". Sekarang kunci basi dibersihkan otomatis.
+  if [ "$PERFLITE" != 1 ]; then
+    [ -f "$PL_MODE_LOCK" ] && { rm -f "$PL_MODE_LOCK"; flog PROFILE INFO "kunci Perf Lite basi dibersihkan (PERFLITE=0 di conf)"; }
+    return 1
+  fi
+  echo "Mode '$1' TIDAK DIRESPON: Perf Lite sedang AKTIF (hanya mode balance yang bisa dipakai bersama Perf Lite)."
+  echo "Matikan Perf Lite dulu (azenith-ai perflite off / toggle WebUI) baru PowerSaver & ZAI-Turbo bisa dipakai lagi."
+  flog PROFILE INFO "mode '$1' ditolak - Perf Lite aktif (PL_MODE_LOCK), tidak ada perubahan thermal/CONF"
+  return 0
+}
+
+SWITCH_LOCK="$RUNDIR/mode_switching"
+as_begin() { # as_begin <mode>
+  mkdir -p "$RUNDIR" 2>/dev/null
+  echo $$ > "$SWITCH_LOCK"
+  echo "$1" > "$MODE_FILE"
+  asb_t=0
+  while [ "$asb_t" -lt 20 ]; do
+    [ -e "$RUNDIR/ml_watch.running" ] || break
+    sleep 0.5 2>/dev/null || sleep 1
+    asb_t=$((asb_t + 1))
+  done
+}
+trap 'rm -f "$SWITCH_LOCK"' EXIT
+
+# fix39: AKAR "gaming/balance/zet output freq sama persis dengan saver".
+# Saver menyalakan Battery Saver Android (low_power=1); selama itu PowerManager/
+# power HAL vendor menjepit CPU. Dulu ml_apply jalan DULU baru ps_apply_mode
+# mematikan Battery Saver, jadi tulisan freq baru kena jepitan saver, dan saat
+# saver dimatikan HAL tidak menulis ulang angka kita -> freq tetap angka saver
+# (dan laporan ml_report, yang dibuat di dalam ml_apply, ikut menunjukkan itu).
+# Sekarang status Battery Saver DITUNTASKAN dulu (tunggu low_power benar-benar
+# berubah + beri HAL jeda), BARU ml_apply menulis & memverifikasi freq.
+as_ps_first() { # as_ps_first <mode>
+  ps_apply_mode "$1" >/dev/null 2>&1
+  asp_t=$(ps_target_for_mode "$1"); asp_i=0
+  while [ -n "$asp_t" ] && [ "$asp_i" -lt 10 ]; do
+    [ "$(ps_get)" = "$asp_t" ] && break
+    sleep 0.3 2>/dev/null || sleep 1
+    asp_i=$((asp_i + 1))
+  done
+  sleep 1 2>/dev/null
+}
+
+as_reset_all() { # as_reset_all <mode_baru>
+  [ -n "$1" ] && as_begin "$1"
+  # v1.0.38: Fast Charger AKTIF -> Disable Thermal milik Fast Charger JANGAN dimatikan
+  # (balance sekarang boleh dipakai bareng Fast Charger; thermal tetap mati).
+  if [ "$THERMAL_KILL" = 1 ] && [ "$FAST_CHARGE" != 1 ]; then tk_off >/dev/null 2>&1; fi
+  cleanup_all >/dev/null 2>&1
+  if [ "$BYPASS_THERMAL" = 1 ]; then
+    as_setconf BYPASS_THERMAL 0
+    as_setconf BYPASS_PREV_MODE ""
+  fi
+  load_conf
+}
+
+mode_balance() {
+  # v1.0.38: balance TIDAK lagi ditolak saat Fast Charger aktif. Yang tidak direspon
+  # sekarang adalah Perf Lite (pl_on menolak kalau Fast Charger aktif).
+  # Kembali ke jalur vendor default: reset total dulu (lihat as_reset_all),
+  # baru preset seimbang mengikuti tier device (sama seperti `azenith-ai auto`).
+  as_reset_all balance
+  as_setconf PRESET auto
+  as_setconf THERMAL_MODE auto
+  as_setconf TRIP_RAISE_C 0
+  # v1.0.9-fix4: dulu ambang suhu yang diturunkan oleh mode saver (SAFE_BATT_C/
+  # SAFE_SKIN_C) tidak pernah dikembalikan ke default saat pindah ke balance -
+  # thermal jadi "lebih sensitif" terus menerus walau sudah keluar dari saver.
+  as_setconf SAFE_BATT_C 43
+  as_setconf SAFE_SKIN_C 46
+  load_conf
+  as_ps_first balance
+  ml_apply balance
+  echo auto > "$DATADIR/mode_state"
+  as_set_state balance
+  echo "Mode: balance (vendor thermal default, preset auto, CPU 1400/1200MHz, GPU plafon 1100MHz, service thermal NORMAL/running, Battery Saver OFF)"
+}
+
+mode_saver() {
+  as_fc_locked saver && return 0
+  as_pl_locked saver && return 0
+  # Preset 'cool' (lib/perf.sh: LV_CAP lebih rendah) + ambang suhu diturunkan
+  # supaya thermal_apply/daemon throttle lebih awal -> lebih dingin & hemat daya.
+  # Reset total dulu supaya tidak mewarisi service yang masih "stopped" dari
+  # gaming/extreme sebelumnya.
+  as_reset_all saver
+  as_setconf PRESET cool
+  as_setconf THERMAL_MODE auto
+  as_setconf TRIP_RAISE_C 0
+  as_setconf SAFE_BATT_C 40      # default 43 -> diturunkan 3C
+  as_setconf SAFE_SKIN_C 43      # default 46 -> diturunkan 3C
+  load_conf
+  as_ps_first saver
+  ml_apply saver
+  echo auto > "$DATADIR/mode_state"
+  as_set_state saver
+  echo "Mode: saver (preset cool, CPU 1200/1100MHz, GPU plafon 1000MHz, ambang suhu diturunkan, service thermal NORMAL/running, Battery Saver Android ON real-time)"
+}
+
+mode_extreme() {
+  as_pl_locked extreme && return 0
+  # Di atas 'gaming': izinkan Disable Thermal (THERMAL_KILL=1) agar daemon
+  # vendor thermal benar2 dihentikan, bukan cuma dilonggarkan. AMAN dipakai
+  # sekarang karena lib/thermalkill.sh v1.0.9-fix sudah tidak kill -9/BLOCK
+  # binary combo-HAL (lihat tk_is_combo_bin) dan watchdog diperlambat ke 5 dtk.
+  # v1.0.9-fix4: reset total dulu (as_reset_all) supaya TRIP_RAISE_C +10C di
+  # bawah ini dihitung dari nilai trip ASLI, bukan menumpuk di atas +7C yang
+  # mungkin masih tertulis dari mode gaming sebelumnya.
+  as_reset_all extreme
+  as_setconf PRESET extreme
+  as_setconf TRIP_RAISE_C 10
+  as_setconf THERMAL_MODE hard
+  as_setconf BYPASS_THERMAL 0     # thermalkill yang menang, bukan bypass (lihat lib/bypass.sh)
+  load_conf
+  thermal_apply
+  as_ps_first extreme
+  ml_apply extreme
+  # v1.0.9-fix2: dulu di sini `tk_on` (TANPA "quick") dipanggil. Jalur itu
+  # punya sampai 3x `sleep 2` (6 dtk) DITAMBAH `tk_loop_start verify` yang
+  # bisa menunggu sampai 6-8 dtk lagi kalau penjaga lambat start - total bisa
+  # >10-15 dtk, itu sebabnya tombol Extreme terasa macet/lama, padahal cuma
+  # menunggu sleep, bukan benar2 bekerja selama itu. "quick" TETAP mematikan
+  # service thermal SEKARANG JUGA (tk_enforce dijalankan di awal tk_on,
+  # sebelum argumen "quick" dicek sama sekali) dan TETAP menjalankan penjaga
+  # (tkloop.sh, watchdog tiap TK_TICK_EFF dtk) di background untuk BLOCK
+  # permanen kalau service coba menyala lagi - cuma skip 3x sleep verifikasi
+  # supaya tombol di WebUI tidak terasa menggantung. Status sebenarnya tetap
+  # bisa dicek kapan saja: azenith-ai thermalkill status
+  # v1.0.44: ZAI-Turbo mematikan SEMUA service thermal, termasuk HAL combo MTK yang tadinya tetap running
+  as_setconf TK_FORCE_COMBO 1; load_conf
+  tk_on quick >/dev/null
+  tk_enforce force; sleep 1; tk_enforce
+  echo auto > "$DATADIR/mode_state"
+  as_set_state extreme
+  echo "Mode: ZAI-Turbo (trip +10C, mode hard, Disable Thermal ON (penjaga jalan di background), CPU & GPU tanpa batas: plafon dilepas, floor dikunci ke puncak/OC, Battery Saver Android OFF real-time, 120 FPS semua game)"
+}
+
+show_status() {
+  cur=$(getprop "$PROP")
+  if [ -z "$cur" ]; then
+    as_set_state "${1:-balance}"
+    cur=$(getprop "$PROP")
+  fi
+  echo "$cur"
+  echo "preset=$PRESET thermal_mode=$THERMAL_MODE trip_raise=${TRIP_RAISE_C}C bypass=$BYPASS_THERMAL disable_thermal=$THERMAL_KILL"
+  echo "low_power=$(ps_get) low_power_expect=$(cat "$PS_EXPECT_FILE" 2>/dev/null)"
+}
+
+# LOG PER FITUR: setiap pergantian mode dicatat OK/ERR/BUG (lihat: azenith-ai flog profile).
+# Dijalankan ulang oleh dirinya sendiri (AZ_NOFLOG=1) supaya output & exit-code tetap persis sama.
+if [ -z "$AZ_NOFLOG" ]; then
+  case "$1" in
+    balance|saver|extreme|turbo|zetturbo|zetaiturbo|zai|zaiturbo|restore)
+      AZ_NOFLOG=1; export AZ_NOFLOG
+      fz_o="$RUNDIR/flog_th.out.$$"; fz_e="$RUNDIR/flog_th.err.$$"; fz_a="$RUNDIR/flog_th.all.$$"
+      flog PROFILE INFO "perintah: azenith-thermal $1"
+      sh "$0" "$@" > "$fz_o" 2> "$fz_e"
+      fz_rc=$?
+      cat "$fz_o"; cat "$fz_e" >&2
+      cat "$fz_o" "$fz_e" > "$fz_a" 2>/dev/null
+      # BUG tambahan: mode tercatat tapi nilai real (low_power / state prop) tidak cocok
+      if [ "$fz_rc" = 0 ] && [ "$1" != restore ]; then
+        fz_want=$1; case "$fz_want" in turbo|zetturbo|zetaiturbo|zai|zaiturbo) fz_want=extreme ;; esac
+        fz_got=$(getprop "$PROP")
+        [ "$fz_got" = "$fz_want" ] || echo "state=$fz_got tidak sama dengan mode diminta=$fz_want (gagal diverifikasi)" >> "$fz_a"
+      fi
+      flog_judge PROFILE "mode $1" "$fz_rc" "$fz_a"
+      rm -f "$fz_o" "$fz_e" "$fz_a"
+      exit $fz_rc ;;
+  esac
+fi
+
+case "$1" in
+  balance) mode_balance; show_status ;;
+  saver)   mode_saver;   show_status ;;
+  extreme|turbo|zetturbo|zetaiturbo|zai|zaiturbo) mode_extreme; show_status ;;   # "extreme" = id internal (prop/conf), nama tampilan = ZAI-Turbo
+  restore) # dipanggil dari service.sh saat boot - terapkan ulang mode terakhir
+    m=$(cat "$MODE_FILE" 2>/dev/null)
+    case "$m" in
+      balance|saver|extreme) "mode_$m" >/dev/null; show_status ;;
+      *) show_status ;;
+    esac ;;
+  ""|status) show_status ;;
+  *) echo "Usage: azenith-thermal [balance|saver|extreme (alias: turbo/zetturbo, nama tampilan: ZAI-Turbo)|status]"; exit 2 ;;
+esac

@@ -1,0 +1,16 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)" >> $GITHUB_PATH
+      - run: echo "${{ secrets.KS_B64 }}" | base64 -d > key.jks
+      - run: bash build.sh
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zai-Turbo-apk
+          path: Zai-Turbo.apk
